@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=Salutations
+Comment=Read mail from your online accounts
+Exec=salutations %U
+Icon=net.dunevent.Salutations
+Terminal=false
+Categories=GNOME;GTK;Network;Email;
+Keywords=mail;email;imap;
+StartupNotify=true
+MimeType=x-scheme-handler/mailto;message/rfc822;
+Actions=new-message;
+X-GNOME-UsesNotifications=true
+
+[Desktop Action new-message]
+Name=New message
+Exec=salutations --compose

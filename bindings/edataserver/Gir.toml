@@ -1,0 +1,141 @@
+[options]
+library = "EDataServer"
+version = "1.2"
+min_cfg_version = "3.56"
+target_path = "."
+work_mode = "normal"
+girs_directories = ["../../gir-files"]
+single_version_file = true
+deprecate_by_min_version = true
+generate_safety_asserts = false
+
+external_libraries = ["GLib", "GObject", "Gio"]
+
+generate = [
+    "EDataServer.Extensible",
+    "EDataServer.Extension",
+    "EDataServer.SourceAuthenticationResult",
+    "EDataServer.SourceConnectionStatus",
+    "EDataServer.SourceCredentialsReason",
+    "EDataServer.ThreeState",
+]
+
+manual = [
+    "GLib.Error",
+    "GLib.Bytes",
+    "GLib.Variant",
+    "GLib.MainContext",
+    "GLib.Priority",
+    "Gio.AsyncReadyCallback",
+    "Gio.AsyncResult",
+    "Gio.Cancellable",
+    "Gio.DBusObject",
+    "Gio.File",
+    "Gio.TlsCertificate",
+    "Gio.TlsCertificateFlags",
+    "Gio.ProxyResolver",
+    "Camel.Service",
+    "Camel.NetworkSecurityMethod",
+]
+
+[external_libraries]
+Camel = { crate = "camel" }
+
+[[object]]
+name = "EDataServer.*"
+status = "generate"
+    [[object.function]]
+    pattern = ".+"
+    ignore = true
+    [[object.function]]
+    name = "util_can_use_collection_as_credential_source"
+    ignore = false
+    [[object.constant]]
+    pattern = "SOURCE_EXTENSION_.+"
+    ignore = false
+    [[object.constant]]
+    pattern = "SOURCE_CREDENTIAL_.+"
+    ignore = false
+    [[object.constant]]
+    pattern = ".+"
+    ignore = true
+
+[[object]]
+name = "EDataServer.SourceRegistry"
+status = "generate"
+concurrency = "send+sync"
+    [[object.function]]
+    pattern = "(build_display_tree|free_display_tree|dup_unique_display_name|ref_builtin_.*|ref_default_.*|set_default_.*|create_sources.*|commit_source.*|refresh_backend.*|debug_dump|check_enabled|dup_.*|get_oauth2_services)"
+    ignore = true
+
+[[object]]
+name = "EDataServer.Source"
+status = "generate"
+concurrency = "send+sync"
+    [[object.function]]
+    pattern = "(remote_create.*|remote_delete.*|get_webdav_.*|mail_signature_.*|write.*|remove.*|ref_dbus_object|get_extension|new.*|get_last_credentials_required_arguments.*|proxy_lookup.*|ref_main_context|invoke_authenticate.*|delete_password.*|store_password.*|lookup_password.*|emit_credentials_required|unset_last_credentials_required_arguments|get_context|parameter_to_key|dup_secret_label|equal|compare_by_display_name|hash)"
+    ignore = true
+
+[[object]]
+name = "EDataServer.SourceExtension"
+status = "generate"
+concurrency = "send+sync"
+
+[[object]]
+name = "EDataServer.SourceBackend"
+status = "generate"
+concurrency = "send+sync"
+
+[[object]]
+name = "EDataServer.SourceMailAccount"
+status = "generate"
+concurrency = "send+sync"
+
+[[object]]
+name = "EDataServer.SourceMailTransport"
+status = "generate"
+concurrency = "send+sync"
+
+[[object]]
+name = "EDataServer.SourceMailIdentity"
+status = "generate"
+concurrency = "send+sync"
+
+[[object]]
+name = "EDataServer.SourceAuthentication"
+status = "generate"
+concurrency = "send+sync"
+    [[object.function]]
+    name = "ref_proxy_resolver"
+    ignore = true
+
+[[object]]
+name = "EDataServer.SourceCollection"
+status = "generate"
+concurrency = "send+sync"
+
+[[object]]
+name = "EDataServer.SourceGoa"
+status = "generate"
+concurrency = "send+sync"
+
+[[object]]
+name = "EDataServer.SourceCamel"
+status = "generate"
+concurrency = "send+sync"
+
+[[object]]
+name = "EDataServer.SourceCredentialsProvider"
+status = "generate"
+concurrency = "send+sync"
+    [[object.function]]
+    pattern = "(register_impl|unregister_impl|ref_source|store.*|delete.*)"
+    ignore = true
+
+[[object]]
+name = "EDataServer.NamedParameters"
+status = "generate"
+concurrency = "send+sync"
+    [[object.function]]
+    name = "new_strv"
+    ignore = true

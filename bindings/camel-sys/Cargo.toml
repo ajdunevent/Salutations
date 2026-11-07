@@ -1,0 +1,47 @@
+[package]
+name = "camel-sys"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+license = "LGPL-2.1-or-later"
+description = "FFI bindings to the camel library of evolution-data-server"
+
+[package.metadata.system-deps.camel_1_2]
+name = "camel-1.2"
+version = "3.56"
+
+[package.metadata.system-deps.camel_1_2.v3_60_2]
+version = "3.60.2"
+
+[package.metadata.system-deps.camel_1_2.v3_58]
+version = "3.58"
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--generate-link-to-definition"]
+all-features = true
+
+[lib]
+name = "camel_sys"
+
+[dependencies]
+libc = "0.2"
+
+[dependencies.glib-sys]
+version = "0.22"
+
+[dependencies.gobject-sys]
+version = "0.22"
+
+[dependencies.gio-sys]
+version = "0.22"
+
+[build-dependencies]
+system-deps = "9"
+
+[dev-dependencies]
+shell-words = "1.0.0"
+tempfile = "3"
+
+[features]
+v3_60_2 = ["v3_58"]
+v3_58 = []

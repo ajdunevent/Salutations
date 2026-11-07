@@ -1,0 +1,10 @@
+[options]
+library = "Camel"
+version = "1.2"
+min_cfg_version = "3.56"
+target_path = "."
+work_mode = "sys"
+girs_directories = ["../../gir-files"]
+single_version_file = true
+
+external_libraries = ["GLib", "GObject", "Gio"]

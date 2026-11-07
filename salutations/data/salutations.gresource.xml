@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/net/dunevent/Salutations">
+    <file>style.css</file>
+    <file>net.dunevent.Salutations.metainfo.xml</file>
+    <file>icons/scalable/actions/salutations-inbox-symbolic.svg</file>
+    <file>icons/scalable/actions/salutations-archive-symbolic.svg</file>
+    <file>icons/scalable/actions/salutations-filter-symbolic.svg</file>
+    <file>icons/scalable/actions/salutations-folder-move-symbolic.svg</file>
+    <file>icons/scalable/actions/salutations-select-none-symbolic.svg</file>
+    <file>icons/scalable/actions/salutations-mark-read-symbolic.svg</file>
+    <file>icons/scalable/actions/salutations-non-starred-symbolic.svg</file>
+    <file>icons/scalable/actions/dialog-warning-symbolic.svg</file>
+    <file>icons/scalable/actions/document-edit-symbolic.svg</file>
+    <file>icons/scalable/actions/edit-select-all-symbolic.svg</file>
+    <file>icons/scalable/actions/emblem-system-symbolic.svg</file>
+    <file>icons/scalable/actions/folder-symbolic.svg</file>
+    <file>icons/scalable/actions/go-down-symbolic.svg</file>
+    <file>icons/scalable/actions/go-up-symbolic.svg</file>
+    <file>icons/scalable/actions/image-x-generic-symbolic.svg</file>
+    <file>icons/scalable/actions/mail-attachment-symbolic.svg</file>
+    <file>icons/scalable/actions/application-certificate-symbolic.svg</file>
+    <file>icons/scalable/actions/channel-secure-symbolic.svg</file>
+    <file>icons/scalable/actions/salutations-key-symbolic.svg</file>
+    <file>icons/scalable/actions/salutations-signature-symbolic.svg</file>
+    <file>icons/scalable/actions/salutations-important-symbolic.svg</file>
+    <file>icons/scalable/actions/salutations-restore-symbolic.svg</file>
+    <file>icons/scalable/actions/salutations-delete-permanently-symbolic.svg</file>
+    <file>icons/scalable/actions/mail-mark-notjunk-symbolic.svg</file>
+    <file>icons/scalable/actions/edit-delete-symbolic.svg</file>
+    <file>icons/scalable/actions/mail-message-new-symbolic.svg</file>
+    <file>icons/scalable/actions/mail-forward-symbolic.svg</file>
+    <file>icons/scalable/actions/mail-reply-all-symbolic.svg</file>
+    <file>icons/scalable/actions/mail-reply-sender-symbolic.svg</file>
+    <file>icons/scalable/actions/mail-mark-junk-symbolic.svg</file>
+    <file>icons/scalable/actions/mail-read-symbolic.svg</file>
+    <file>icons/scalable/actions/mail-send-symbolic.svg</file>
+    <file>icons/scalable/actions/mail-unread-symbolic.svg</file>
+    <file>icons/scalable/actions/network-offline-symbolic.svg</file>
+    <file>icons/scalable/actions/open-menu-symbolic.svg</file>
+    <file>icons/scalable/actions/security-medium-symbolic.svg</file>
+    <file>icons/scalable/actions/selection-mode-symbolic.svg</file>
+    <file>icons/scalable/actions/sidebar-show-symbolic.svg</file>
+    <file>icons/scalable/actions/starred-symbolic.svg</file>
+    <file>icons/scalable/actions/system-search-symbolic.svg</file>
+    <file>icons/scalable/actions/system-users-symbolic.svg</file>
+    <file>icons/scalable/actions/user-trash-symbolic.svg</file>
+    <file>icons/scalable/actions/view-refresh-symbolic.svg</file>
+    <file>icons/scalable/actions/view-sort-descending-symbolic.svg</file>
+    <file>icons/scalable/apps/net.dunevent.Salutations.svg</file>
+    <file>icons/symbolic/apps/net.dunevent.Salutations-symbolic.svg</file>
+  </gresource>
+</gresources>

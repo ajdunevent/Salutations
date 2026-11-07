@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = [
+    "bindings/camel-sys",
+    "bindings/edataserver-sys",
+    "bindings/camel",
+    "bindings/edataserver",
+    "salutations-core",
+    "salutations",
+]
+
+[workspace.package]
+edition = "2024"
+license = "GPL-3.0-or-later"
+rust-version = "1.88"
+
+# Optimised like release but quick to rebuild; scripts/dev.sh's default.
+[profile.release-dev]
+inherits = "release"
+incremental = true
+codegen-units = 256
+lto = false

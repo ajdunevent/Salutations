@@ -1,0 +1,160 @@
+.message-row { padding: 10px 12px; }
+.message-row.child { padding: 8px 12px; }
+.message-row .sender { font-weight: normal; }
+.message-row.unread .sender,
+.message-row.unread .subject { font-weight: bold; }
+.message-row.unread .subject { color: var(--accent-color); }
+/* Sizes as in Stamp: sender and subject at body size, preview and date in
+   libadwaita's caption style (set on the labels). */
+.message-row:not(.unread) .preview { opacity: 0.68; }
+.thread-count {
+  font-size: 0.79em;
+  font-weight: bold;
+  min-width: 20px;
+  min-height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: alpha(currentColor, 0.1);
+}
+.avatar-stack avatar { outline: 2px solid var(--view-bg-color); outline-offset: 0; border-radius: 9999px; }
+
+.folder-count { font-size: 0.86em; }
+.account-name { font-weight: bold; }
+
+.viewer-subject { font-size: 1.4em; font-weight: bold; }
+.viewer-headers .field { opacity: 0.68; }
+/* Banners span the pane; their text lines up with the header's 18px. */
+.verify-banner {
+  padding: 8px 18px;
+  color: var(--error-color);
+  background: alpha(var(--error-bg-color), 0.12);
+  font-weight: bold;
+}
+image.verify-failed { color: var(--error-fg-color); background: var(--error-bg-color); border-radius: 9999px; }
+/* Kept to the height of the From line it sits on. */
+.verify-button > button { min-height: 0; min-width: 0; padding: 0 4px; }
+.remote-banner {
+  padding: 6px 12px 6px 18px;
+  background: alpha(currentColor, 0.06);
+}
+
+/* Selection mode: the cursor is shown by the focus ring, not the
+   selected-row background, so it is not mistaken for a checked row. */
+listview.selection-mode > row:selected { background: none; }
+
+/* A preset row's Custom number, drawn like an expander row's child: the
+   same shading as libadwaita's nested lists, and an indented label. */
+row.preset-custom { background-color: color-mix(in srgb, var(--card-shade-color) 50%, transparent); }
+row.preset-custom label.title,
+row.preset-custom label.subtitle { margin-left: 12px; }
+row.preset-nested { background-color: color-mix(in srgb, var(--card-shade-color) 50%, transparent); }
+row.preset-nested label.title,
+row.preset-nested label.subtitle { margin-left: 24px; }
+
+.drag-label {
+  padding: 6px 12px;
+  border-radius: 8px;
+  color: var(--accent-fg-color);
+  background: var(--accent-bg-color);
+  font-weight: bold;
+}
+
+.compose-field { padding: 0 12px; min-height: 40px; }
+.compose-field > label { margin-right: 4px; min-height: 40px; }
+.compose-field dropdown > button { background: none; box-shadow: none; padding-left: 0; }
+entry.compose-entry { background: none; box-shadow: none; padding-left: 0; }
+textview.compose-body { font-size: 1em; }
+textview.signature-text { padding: 0; }
+.message-row.waiting .sender, .message-row.waiting .subject, .message-row.waiting .preview { font-style: italic; }
+.crypto-banner { padding: 6px 12px 6px 18px; background: alpha(currentColor, 0.04); }
+.crypto-banner.warning { color: var(--warning-color); background: alpha(var(--warning-bg-color), 0.12); }
+.crypto-banner.error { color: var(--error-color); background: alpha(var(--error-bg-color), 0.12); font-weight: bold; }
+
+/* The floating New Message button: larger than a header button, lifted
+   off the busy list by a shadow. */
+button.compose-float { min-width: 56px; min-height: 56px; box-shadow: 0 1px 3px alpha(black, 0.3), 0 4px 14px alpha(black, 0.25); }
+button.compose-float image { -gtk-icon-size: 22px; }
+.with-float listview { padding-bottom: 88px; }
+
+/* High importance, in the list and the message header. */
+image.important {
+  color: var(--error-color);
+}
+
+/* The composer's toolbar between the fields and the text. */
+.compose-tools {
+  padding: 6px;
+}
+
+.attachment-tile {
+  padding: 6px 6px 6px 10px;
+  border-radius: 8px;
+  background: var(--card-bg-color);
+  box-shadow: 0 0 0 1px var(--card-shade-color);
+}
+
+.attachment-tile .size {
+  font-size: smaller;
+}
+
+.attachment-tile button label {
+  font-weight: normal;
+}
+
+/* Recipient pills in To, Cc and Bcc. */
+.recipients {
+  padding: 3px 0;
+}
+
+.recipient-pill {
+  padding-left: 10px;
+  border-radius: 999px;
+  background: alpha(currentColor, 0.1);
+}
+
+.recipient-pill.selected {
+  background: var(--accent-bg-color);
+  color: var(--accent-fg-color);
+}
+
+.recipient-pill.error {
+  background: alpha(var(--error-color), 0.15);
+  color: var(--error-color);
+}
+
+.recipient-pill button {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+}
+
+/* In Trash: deleting cannot be undone. */
+button.delete-permanently {
+  color: var(--destructive-color);
+}
+
+/* A focused field is shown by tinting its whole row; the entry's own
+   outline is shorter than the row. */
+entry.compose-entry:focus-within { outline-color: transparent; }
+.compose-field:focus-within { background: alpha(var(--accent-bg-color), 0.08); }
+
+/* The compact header's attachment count, over the paperclip's corner. */
+.compact-attach { padding: 4px 6px 0 0; }
+.attach-count {
+  min-width: 14px;
+  padding: 0 3px;
+  margin: -4px -6px 0 0;
+  border-radius: 999px;
+  font-size: 0.7em;
+  font-weight: bold;
+  background: var(--accent-bg-color);
+  color: var(--accent-fg-color);
+}
+
+/* People in the headers open the contact menu; plain text until hovered. */
+.viewer-headers link { color: inherit; text-decoration-line: none; }
+.viewer-headers link:hover { text-decoration-line: underline; }
+
+.filter-on { color: var(--accent-color); }
+
+.quick-actions button { min-width: 26px; min-height: 26px; padding: 0; }

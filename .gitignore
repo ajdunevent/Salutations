@@ -1,0 +1,9 @@
+/target
+/.flatpak
+/dist
+/.flatpak-builder
+/build-dir
+# The local list of folders kept out of Nextcloud sync.
+/.no-sync
+# The working spec, kept beside the code but not published.
+/spec.md

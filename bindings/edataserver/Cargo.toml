@@ -1,0 +1,22 @@
+[package]
+name = "edataserver"
+version = "0.1.0"
+description = "Rust bindings to EDataServer-1.2 (evolution-data-server)"
+license = "LGPL-2.1-or-later"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+libc = "0.2"
+glib = "0.22"
+gio = "0.22"
+camel = { path = "../camel" }
+ffi = { package = "edataserver-sys", path = "../edataserver-sys" }
+
+[features]
+default = ["gio_v2_26"]
+# gir gates ESource's GProxyResolver interface on this.
+gio_v2_26 = []
+# The generated API newer than 3.56.
+v3_60 = ["ffi/v3_60"]
+v3_60_2 = ["v3_60", "ffi/v3_60_2"]

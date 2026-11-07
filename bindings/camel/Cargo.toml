@@ -1,0 +1,22 @@
+[package]
+name = "camel"
+version = "0.1.0"
+description = "Rust bindings to Camel-1.2 (evolution-data-server)"
+license = "LGPL-2.1-or-later"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+libc = "0.2"
+glib = "0.22"
+gio = "0.22"
+ffi = { package = "camel-sys", path = "../camel-sys" }
+
+[build-dependencies]
+pkg-config = "0.3"
+
+# The generated API newer than 3.56. src/compat.rs covers what Salutations
+# needs from it on any version, without these.
+[features]
+v3_58 = ["ffi/v3_58"]
+v3_60_2 = ["v3_58", "ffi/v3_60_2"]

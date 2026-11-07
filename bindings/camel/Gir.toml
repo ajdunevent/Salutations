@@ -1,0 +1,275 @@
+[options]
+library = "Camel"
+version = "1.2"
+min_cfg_version = "3.56"
+target_path = "."
+work_mode = "normal"
+girs_directories = ["../../gir-files"]
+single_version_file = true
+deprecate_by_min_version = true
+generate_safety_asserts = false
+
+external_libraries = ["GLib", "GObject", "Gio"]
+
+generate = [
+    "Camel.FolderThreadFlags",
+    "Camel.TransferEncoding",
+    "Camel.AuthenticationResult",
+    "Camel.Error",
+    "Camel.FetchHeadersType",
+    "Camel.FetchType",
+    "Camel.FolderError",
+    "Camel.FolderFlags",
+    "Camel.FolderInfo",
+    "Camel.FolderInfoFlags",
+    "Camel.MessageFlags",
+    "Camel.NetworkSecurityMethod",
+    "Camel.Provider",
+    "Camel.ProviderFlags",
+    "Camel.ProviderType",
+    "Camel.ServiceConnectionStatus",
+    "Camel.ServiceAuthType",
+    "Camel.ServiceError",
+    "Camel.SessionAlertType",
+    "Camel.StoreError",
+    "Camel.StoreFlags",
+    "Camel.StoreGetFolderFlags",
+    "Camel.StoreGetFolderInfoFlags",
+    "Camel.ThreeState",
+]
+
+manual = [
+    "GLib.Error",
+    "GLib.Bytes",
+    "GLib.Variant",
+    "GLib.PtrArray",
+    "GLib.Priority",
+    "GLib.Quark",
+    "GLib.DateTime",
+    "Gio.AsyncReadyCallback",
+    "Gio.AsyncResult",
+    "Gio.Cancellable",
+    "Gio.InputStream",
+    "Gio.OutputStream",
+    "Gio.IOStream",
+    "Gio.ProxyResolver",
+    "Gio.SocketConnectable",
+    "Gio.TlsCertificate",
+    "Gio.TlsCertificateFlags",
+    "Gio.File",
+    "Camel.FolderChangeInfo",
+    "Camel.FolderQuotaInfo",
+]
+
+[[object]]
+name = "Camel.*"
+status = "generate"
+    [[object.function]]
+    pattern = ".+"
+    ignore = true
+    [[object.function]]
+    name = "init"
+    ignore = false
+    manual = true
+    [[object.function]]
+    name = "shutdown"
+    ignore = false
+    manual = true
+    [[object.constant]]
+    pattern = ".+"
+    ignore = true
+
+[[object]]
+name = "Camel.Session"
+status = "generate"
+concurrency = "send+sync"
+    [[object.function]]
+    pattern = "(submit_job|idle_add|get_junk_filter|set_junk_filter|get_filter_driver|forward_to.*|get_recipient_certificates.*|addressbook_contains.*|lookup_addressbook)"
+    ignore = true
+
+[[object]]
+name = "Camel.Service"
+status = "generate"
+concurrency = "send+sync"
+
+[[object]]
+name = "Camel.Store"
+status = "generate"
+concurrency = "send+sync"
+    [[object.function]]
+    pattern = "(can_refresh_folder|create_folder.*|folder_info_.*|get_junk_folder.*|get_trash_folder.*|get_db|get_summary|maybe_run_db_maintenance|delete_cached_folder|initial_setup.*|synchronize.*)"
+    ignore = true
+    # Opens "inbox" past the store's folder cache, so the IMAPX server
+    # never updates the returned folder. Use get_folder_sync("INBOX").
+    [[object.function]]
+    pattern = "get_inbox_folder.*"
+    ignore = true
+
+[[object]]
+name = "Camel.Folder"
+status = "generate"
+concurrency = "send+sync"
+    [[object.function]]
+    pattern = "(search.*|get_summary|get_parent_store|free_.*|dup_uids|dup_uncached_uids|get_uids|get_message_info|get_quota_info.*|get_filename|prepare_content_refresh|change_info.*|take_folder_summary|get_message_cached|delete|rename|changed|transfer_messages_to.*|get_thread_messages|append_message.*|get_permanent_flags|get_message_user_tag|set_message_user_tag|get_message_user_flag|set_message_user_flag|cmp_uids|sort_uids|count_by_expression|uid_list.*|get_uncached_uids|dup_headers.*)"
+    ignore = true
+    # get_message_finish() can return NULL without setting an error.
+    [[object.function]]
+    pattern = "get_message(_sync)?"
+        [object.function.return]
+        nullable = true
+    # The "changed" signal passes a CamelFolderChangeInfo; see folder.rs.
+    [[object.signal]]
+    name = "changed"
+    ignore = true
+
+[[object]]
+name = "Camel.MessageInfo"
+status = "generate"
+concurrency = "send+sync"
+    [[object.function]]
+    pattern = "(new.*|load|save|dup_.*|get_references|take_.*|set_.*|get_user_flags|get_user_tags|get_headers|get_message_id|get_size|get_date_.*|get_folder_flagged.*|property_lock|property_unlock|get_abort_notifications|set_abort_notifications|freeze_notifications|thaw_notifications|get_notifications_frozen|get_summary|ref_summary|clone|get_user_flag|get_user_tag)"
+    ignore = true
+
+[[object]]
+name = "Camel.NetworkService"
+status = "generate"
+trait_name = "CamelNetworkServiceExt"
+    # gir maps the boolean answer to Ok/Err and loses it.
+    [[object.function]]
+    pattern = "can_reach.*"
+    ignore = true
+
+
+[[object]]
+name = "Camel.OfflineStore"
+status = "generate"
+concurrency = "send+sync"
+    [[object.function]]
+    # Returns NULL instead of an empty array; see src/store.rs.
+    name = "dup_downsync_folders"
+    manual = true
+
+[[object]]
+name = "Camel.OfflineFolder"
+status = "generate"
+concurrency = "send+sync"
+
+[[object]]
+name = "Camel.Transport"
+status = "generate"
+concurrency = "send+sync"
+
+[[object]]
+name = "Camel.Settings"
+status = "generate"
+concurrency = "send+sync"
+trait_name = "CamelSettingsExt"
+
+[[object]]
+name = "Camel.StoreSettings"
+status = "generate"
+concurrency = "send+sync"
+
+[[object]]
+name = "Camel.OfflineSettings"
+status = "generate"
+concurrency = "send+sync"
+
+[[object]]
+name = "Camel.NetworkSettings"
+status = "generate"
+concurrency = "send+sync"
+
+[[object]]
+name = "Camel.Sasl"
+status = "generate"
+concurrency = "send+sync"
+    # gir maps the boolean answer to Ok/Err and loses it; see sasl.rs.
+    [[object.function]]
+    pattern = "try_empty_password.*"
+    ignore = true
+
+# Type only: mail filters are not used, but CamelSession's
+# get_filter_driver vfunc returns one.
+[[object]]
+name = "Camel.FilterDriver"
+status = "generate"
+concurrency = "send+sync"
+    [[object.function]]
+    pattern = ".+"
+    ignore = true
+    [[object.signal]]
+    pattern = ".+"
+    ignore = true
+
+[[object]]
+name = "Camel.FolderSummary"
+status = "generate"
+concurrency = "send+sync"
+    # Only the counts are bound.
+    [[object.function]]
+    pattern = "(new|add|check_uid|clear|dup_changed|dup_uids|get|get_flags|get_folder|get_hash|get_index|get_info_flags|get_next_uid|get_timestamp|get_version|header_load|header_save|info_new_from_.+|load|lock|next_uid|next_uid_string|peek_loaded|prepare_fetch_all|remove|remove_uid|remove_uids|replace_flags|save|set_flags|set_index|set_next_uid|set_timestamp|set_version|touch|unlock)"
+    ignore = true
+    [[object.signal]]
+    pattern = ".+"
+    ignore = true
+    [[object.property]]
+    pattern = ".+"
+    ignore = true
+
+[[object]]
+name = "Camel.FolderThread"
+status = "generate"
+concurrency = "send+sync"
+    # Nodes are opaque pointers into the thread; see folder_thread.rs.
+    [[object.function]]
+    pattern = "(new_items|get_tree|dump)"
+    ignore = true
+
+[[object]]
+name = "Camel.ContentType"
+status = "generate"
+    [[object.function]]
+    pattern = "(dump|decode|new)"
+    ignore = true
+
+[[object]]
+name = "Camel.InternetAddress"
+status = "generate"
+concurrency = "send+sync"
+    [[object.function]]
+    pattern = "(encode_address|find_.*)"
+    ignore = true
+
+[[object]]
+name = "Camel.MimePart"
+status = "generate"
+concurrency = "send+sync"
+    [[object.function]]
+    name = "set_content_languages"
+    ignore = true
+
+[[object]]
+name = "Camel.Address"
+status = "generate"
+concurrency = "send+sync"
+
+[[object]]
+name = "Camel.DataWrapper"
+status = "generate"
+concurrency = "send+sync"
+
+[[object]]
+name = "Camel.Medium"
+status = "generate"
+concurrency = "send+sync"
+
+[[object]]
+name = "Camel.MimeMessage"
+status = "generate"
+concurrency = "send+sync"
+
+[[object]]
+name = "Camel.Multipart"
+status = "generate"
+concurrency = "send+sync"

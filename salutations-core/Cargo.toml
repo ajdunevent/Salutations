@@ -1,0 +1,19 @@
+[package]
+name = "salutations-core"
+version = "0.1.0"
+description = "Mail engine of Salutations: accounts, session and stores over EDS and Camel, without GTK"
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+camel = { path = "../bindings/camel" }
+edataserver = { path = "../bindings/edataserver" }
+gio = { version = "0.22", features = ["v2_70"] }
+glib = "0.22"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+regex = { version = "1", default-features = false, features = ["std", "unicode-case", "unicode-perl", "perf"] }
+soup = { package = "soup3", version = "0.9" }
+
+[build-dependencies]
+pkg-config = "0.3"

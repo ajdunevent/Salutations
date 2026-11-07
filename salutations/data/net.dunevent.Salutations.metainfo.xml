@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 Salutations contributors -->
+<component type="desktop-application">
+  <id>net.dunevent.Salutations</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <name>Salutations</name>
+  <summary>Lean mail for GNOME Online Accounts</summary>
+  <developer id="net.dunevent">
+    <name>Salutations contributors</name>
+  </developer>
+
+  <description>
+    <p>
+      Salutations reads and sends mail from the accounts you have already
+      added in GNOME Online Accounts, with nothing else to set up.
+    </p>
+    <p>
+      It is made for phones as much as desktops, with an adaptive layout
+      and touch gestures throughout.
+    </p>
+    <p>Private and secure:</p>
+    <ul>
+      <li>Remote content is blocked until you allow it, then loads without cookies</li>
+      <li>Basic tracking can be removed from remote content</li>
+      <li>Links are checked before they open</li>
+      <li>Forged senders are flagged, and verified senders show their logo</li>
+      <li>OpenPGP signing and encryption use your own GnuPG keys</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">net.dunevent.Salutations.desktop</launchable>
+
+  <url type="homepage">https://dev.dunevent.net/aj/Salutations</url>
+  <url type="bugtracker">https://dev.dunevent.net/aj/Salutations/issues</url>
+  <url type="vcs-browser">https://dev.dunevent.net/aj/Salutations</url>
+  <url type="donation">https://dunevent.net/donate</url>
+  <update_contact>aj@dunevent.net</update_contact>
+
+  <!-- Mail reaches anyone and comes from anyone, unmoderated. -->
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-chat">intense</content_attribute>
+  </content_rating>
+
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <control>touch</control>
+  </supports>
+
+  <!-- From the icon's palette; the green envelope stands out on both. -->
+  <branding>
+    <color type="primary" scheme_preference="light">#83b6ec</color>
+    <color type="primary" scheme_preference="dark">#245b9e</color>
+  </branding>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>A conversation on the desktop, in light and dark styles</caption>
+      <image>https://dev.dunevent.net/aj/Salutations/raw/branch/main/screenshots/desktop.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>The inbox and a message on a phone, in light and dark styles</caption>
+      <image>https://dev.dunevent.net/aj/Salutations/raw/branch/main/screenshots/mobile.png</image>
+    </screenshot>
+  </screenshots>
+
+  <releases>
+    <release version="0.1.0" date="2026-11-07">
+      <description>
+        <p>The first release.</p>
+        <ul>
+          <li>Accounts from GNOME Online Accounts, with folders, threads, search and offline reading</li>
+          <li>An adaptive layout with touch gestures, from phones to desktops</li>
+          <li>Remote content blocked by default, with optional removal of basic tracking</li>
+          <li>Link checks, forged-sender flags and verified sender logos</li>
+          <li>OpenPGP signing, encryption and decryption through GnuPG</li>
+          <li>Undoable actions that keep working while the server catches up</li>
+        </ul>
+      </description>
+    </release>
+  </releases>
+</component>

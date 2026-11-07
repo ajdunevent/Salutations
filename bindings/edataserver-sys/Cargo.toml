@@ -1,0 +1,53 @@
+[package]
+name = "edataserver-sys"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+license = "LGPL-2.1-or-later"
+description = "FFI bindings to the edataserver library of evolution-data-server"
+
+[package.metadata.system-deps.libedataserver_1_2]
+name = "libedataserver-1.2"
+version = "3.56"
+
+[package.metadata.system-deps.libedataserver_1_2.v3_60_2]
+version = "3.60.2"
+
+[package.metadata.system-deps.libedataserver_1_2.v3_60]
+version = "3.60"
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--generate-link-to-definition"]
+all-features = true
+
+[lib]
+name = "edataserver_sys"
+
+[dependencies]
+libc = "0.2"
+
+[dependencies.glib-sys]
+version = "0.22"
+
+[dependencies.gobject-sys]
+version = "0.22"
+
+[dependencies.gio-sys]
+version = "0.22"
+
+[dependencies.camel-sys]
+path = "../camel-sys"
+
+[dependencies.soup3-sys]
+version = "0.9"
+
+[build-dependencies]
+system-deps = "9"
+
+[dev-dependencies]
+shell-words = "1.0.0"
+tempfile = "3"
+
+[features]
+v3_60_2 = ["v3_60"]
+v3_60 = []
