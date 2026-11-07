@@ -1,14 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
   <linearGradient id="face2" x1="0" y1="48.5" x2="0" y2="112.5" gradientUnits="userSpaceOnUse">
     <stop offset="0" stop-color="#9e91e8"/><stop offset="1" stop-color="#7a59ca"/></linearGradient>
-  <linearGradient id="side2" x1="12.0" y1="0" x2="116.0" y2="0" gradientUnits="userSpaceOnUse">
+  <linearGradient id="side2" x1="6.0" y1="0" x2="110.0" y2="0" gradientUnits="userSpaceOnUse">
     <stop offset="0" stop-color="#9182b7"/><stop offset="0.07" stop-color="#574091"/>
     <stop offset="0.93" stop-color="#574091"/><stop offset="1" stop-color="#9182b7"/></linearGradient>
   <linearGradient id="hl2" x1="0" y1="48.5" x2="0" y2="112.5" gradientUnits="userSpaceOnUse">
     <stop offset="0" stop-color="#fff" stop-opacity="0.55"/><stop offset="0.25" stop-color="#fff" stop-opacity="0"/></linearGradient>
-  <rect x="12.0" y="55.5" width="104" height="64" rx="12" fill="url(#side2)"/>
-  <rect x="12.0" y="48.5" width="104" height="64" rx="12" fill="url(#face2)"/>
-  <rect x="12.75" y="49.25" width="102.5" height="62.5" rx="11.25" fill="none" stroke="url(#hl2)" stroke-width="1.5"/>
+  <rect x="6.0" y="55.5" width="104" height="64" rx="12" fill="url(#side2)"/>
+  <rect x="6.0" y="48.5" width="104" height="64" rx="12" fill="url(#face2)"/>
+  <rect x="6.75" y="49.25" width="102.5" height="62.5" rx="11.25" fill="none" stroke="url(#hl2)" stroke-width="1.5"/>
   <linearGradient id="face1" x1="0" y1="28.5" x2="0" y2="92.5" gradientUnits="userSpaceOnUse">
     <stop offset="0" stop-color="#83b6ec"/><stop offset="1" stop-color="#337fdc"/></linearGradient>
   <linearGradient id="side1" x1="12.0" y1="0" x2="116.0" y2="0" gradientUnits="userSpaceOnUse">
@@ -21,16 +21,16 @@
   <rect x="12.75" y="29.25" width="102.5" height="62.5" rx="11.25" fill="none" stroke="url(#hl1)" stroke-width="1.5"/>
   <linearGradient id="face0" x1="0" y1="8.5" x2="0" y2="72.5" gradientUnits="userSpaceOnUse">
     <stop offset="0" stop-color="#8de6b1"/><stop offset="1" stop-color="#29ae74"/></linearGradient>
-  <linearGradient id="side0" x1="12.0" y1="0" x2="116.0" y2="0" gradientUnits="userSpaceOnUse">
+  <linearGradient id="side0" x1="18.0" y1="0" x2="122.0" y2="0" gradientUnits="userSpaceOnUse">
     <stop offset="0" stop-color="#6caa8f"/><stop offset="0.07" stop-color="#1d7d53"/>
     <stop offset="0.93" stop-color="#1d7d53"/><stop offset="1" stop-color="#6caa8f"/></linearGradient>
   <linearGradient id="hl0" x1="0" y1="8.5" x2="0" y2="72.5" gradientUnits="userSpaceOnUse">
     <stop offset="0" stop-color="#fff" stop-opacity="0.55"/><stop offset="0.25" stop-color="#fff" stop-opacity="0"/></linearGradient>
-  <rect x="12.0" y="15.5" width="104" height="64" rx="12" fill="url(#side0)"/>
-  <rect x="12.0" y="8.5" width="104" height="64" rx="12" fill="url(#face0)"/>
-  <rect x="12.75" y="9.25" width="102.5" height="62.5" rx="11.25" fill="none" stroke="url(#hl0)" stroke-width="1.5"/>
-  <path d="M 28.0 58.5 L 53.6 44.34 M 100.0 58.5 L 74.4 44.34"
+  <rect x="18.0" y="15.5" width="104" height="64" rx="12" fill="url(#side0)"/>
+  <rect x="18.0" y="8.5" width="104" height="64" rx="12" fill="url(#face0)"/>
+  <rect x="18.75" y="9.25" width="102.5" height="62.5" rx="11.25" fill="none" stroke="url(#hl0)" stroke-width="1.5"/>
+  <path d="M 34.0 58.5 L 59.6 44.34 M 106.0 58.5 L 80.4 44.34"
         fill="none" stroke="#cef8d8" stroke-opacity="0.35" stroke-width="3.5" stroke-linecap="round"/>
-  <path d="M 26.0 22.5 L 64.0 46.9 L 102.0 22.5"
+  <path d="M 32.0 22.5 L 70.0 46.9 L 108.0 22.5"
         fill="none" stroke="#ffffff" stroke-opacity="0.85" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

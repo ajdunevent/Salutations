@@ -50,5 +50,8 @@ def icon(name, places, colors):
 VIOLET = ('#d5d2f5', '#9e91e8', '#7a59ca')
 X = (128 - W) / 2
 OFF = 20
+# Each envelope sits SHIFT further left than the one in front of it; the
+# stack as a whole stays centred.
+SHIFT = 6
 top = (128 - (H + 2 * OFF + T)) / 2
-icon(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'salutations', 'data', 'icons', 'scalable', 'apps', 'net.dunevent.Salutations.svg'), [(X, top), (X, top + OFF), (X, top + 2 * OFF)], [GREEN, BLUE, VIOLET])
+icon(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'salutations', 'data', 'icons', 'scalable', 'apps', 'net.dunevent.Salutations.svg'), [(X + SHIFT, top), (X, top + OFF), (X - SHIFT, top + 2 * OFF)], [GREEN, BLUE, VIOLET])

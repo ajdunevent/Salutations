@@ -1,6 +1,6 @@
 [package]
 name = "salutations-core"
-version = "0.1.0"
+version = "0.1.1"
 description = "Mail engine of Salutations: accounts, session and stores over EDS and Camel, without GTK"
 license.workspace = true
 edition.workspace = true

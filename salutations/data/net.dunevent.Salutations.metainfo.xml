@@ -70,6 +70,15 @@
   </screenshots>
 
   <releases>
+    <release version="0.1.1" date="2026-11-07">
+      <description>
+        <p>A refreshed icon.</p>
+        <ul>
+          <li>The app icon's envelopes are fanned out instead of stacked straight</li>
+          <li>The About dialog credits the developer</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-11-07">
       <description>
         <p>The first release.</p>

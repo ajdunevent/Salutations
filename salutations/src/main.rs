@@ -164,6 +164,7 @@ fn about_dialog() -> adw::AboutDialog {
     d.set_application_icon(APP_ID);
     d.set_version(version);
     d.set_copyright("© 2026 Salutations contributors");
+    d.set_developers(&["AJ Dunevent"]);
     d.set_license_type(gtk::License::Gpl30);
     d.add_link("_Donate", "https://dunevent.net/donate");
     d.add_acknowledgement_section(
