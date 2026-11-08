@@ -14,6 +14,9 @@ use salutations_core::Settings;
 use salutations_core::crypto;
 use webkit::prelude::*;
 
+/// Frames after a new page is committed before the body shows again.
+const REVEAL_FRAMES: u32 = 2;
+
 thread_local! {
     /// The message whose `cid:` parts the web view may load.
     static SHOWN: RefCell<Option<camel::MimeMessage>> = const { RefCell::new(None) };
@@ -168,6 +171,8 @@ pub struct Viewer {
     /// The message being fetched; a second request for it is dropped
     /// rather than starting a duplicate fetch.
     loading: RefCell<Option<(camel::Folder, String)>>,
+    /// The message whose body the web view last loaded.
+    painted: RefCell<Option<(camel::Folder, String)>>,
     on_shown: RefCell<Option<ShownHandler>>,
     /// Anchors of the loaded page, by the index in their rewritten href.
     links: RefCell<Vec<Link>>,
@@ -578,6 +583,7 @@ impl Viewer {
             shown: RefCell::new(None),
             generation: Cell::new(0),
             loading: RefCell::new(None),
+            painted: RefCell::new(None),
             on_shown: RefCell::new(None),
             links: RefCell::new(Vec::new()),
             gpg: RefCell::new(None),
@@ -643,6 +649,29 @@ impl Viewer {
                 this.open_link(&link);
             }
             true
+        });
+        // A new message's body stays hidden until WebKit has replaced the
+        // old one: the web view keeps showing its last frame, the previous
+        // message's body, for a frame or two after the new headers appear.
+        // Finished alone is too late, since it waits for remote images.
+        this.web.connect_load_changed(|web, event| match event {
+            webkit::LoadEvent::Committed => {
+                let frames = Cell::new(0);
+                web.add_tick_callback(move |web, _| {
+                    frames.set(frames.get() + 1);
+                    if frames.get() < REVEAL_FRAMES {
+                        return glib::ControlFlow::Continue;
+                    }
+                    web.set_opacity(1.0);
+                    glib::ControlFlow::Break
+                });
+            }
+            webkit::LoadEvent::Finished => web.set_opacity(1.0),
+            _ => {}
+        });
+        this.web.connect_load_failed(|web, _, _, _| {
+            web.set_opacity(1.0);
+            false
         });
         let weak = Rc::downgrade(&this);
         this.web.connect_context_menu(move |_, menu, hit| {
@@ -953,6 +982,13 @@ impl Viewer {
         *self.links.borrow_mut() = found;
         let body = with_print_header(&body, &print_header(r, &date, &s.attachments));
         let doc = format!("<meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">{style}{body}");
+        // Reloads of the same message (remote content allowed, a theme
+        // change) keep its body visible.
+        let key = Some((s.folder.clone(), s.uid.clone()));
+        if *self.painted.borrow() != key {
+            self.web.set_opacity(0.0);
+            *self.painted.borrow_mut() = key;
+        }
         self.web.load_html(&doc, None);
         self.widget.set_visible_child_name("message");
     }

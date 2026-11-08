@@ -70,6 +70,15 @@
   </screenshots>
 
   <releases>
+    <release version="0.1.2" date="2026-11-07">
+      <description>
+        <p>A smoother message view.</p>
+        <ul>
+          <li>Opening a message no longer flashes the previous message's text</li>
+          <li>Built on GNOME 51</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-11-07">
       <description>
         <p>A refreshed icon.</p>

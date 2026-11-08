@@ -102,8 +102,8 @@ builds offline; run `scripts/update-cargo-sources.sh` after any change to
 `Cargo.lock`.
 
 ```sh
-flatpak install flathub org.gnome.Sdk//50 org.gnome.Platform//50 \
-    org.freedesktop.Sdk.Extension.rust-stable//25.08 org.flatpak.Builder
+flatpak install flathub org.gnome.Sdk//51 org.gnome.Platform//51 \
+    org.freedesktop.Sdk.Extension.rust-stable//26.08 org.flatpak.Builder
 flatpak run org.flatpak.Builder --user --install --force-clean \
     build-dir build-aux/net.dunevent.Salutations.json
 flatpak run net.dunevent.Salutations
