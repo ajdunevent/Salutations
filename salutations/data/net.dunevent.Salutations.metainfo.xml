@@ -70,6 +70,14 @@
   </screenshots>
 
   <releases>
+    <release version="0.1.3" date="2026-11-07">
+      <description>
+        <p>Second try at eliminating the previous message flash.</p>
+        <ul>
+          <li>Opening a message no longer briefly shows the previous message's text</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.2" date="2026-11-07">
       <description>
         <p>A smoother message view.</p>

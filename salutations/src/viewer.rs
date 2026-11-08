@@ -14,8 +14,16 @@ use salutations_core::Settings;
 use salutations_core::crypto;
 use webkit::prelude::*;
 
-/// Frames after a new page is committed before the body shows again.
-const REVEAL_FRAMES: u32 = 2;
+/// How long after a new page is committed the body stays hidden. The new
+/// page's first frames take about 60 ms in software rendering; the rest
+/// is margin.
+const REVEAL_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// The web view's opacity while hidden, the lowest GTK still draws. GTK
+/// skips drawing a widget at opacity 0, and WebKit then holds back the new
+/// page's frames until it is drawn again, so the old page would show on
+/// reveal whatever the delay.
+const HIDDEN_OPACITY: f64 = 1.0 / 255.0;
 
 thread_local! {
     /// The message whose `cid:` parts the web view may load.
@@ -173,6 +181,10 @@ pub struct Viewer {
     loading: RefCell<Option<(camel::Folder, String)>>,
     /// The message whose body the web view last loaded.
     painted: RefCell<Option<(camel::Folder, String)>>,
+    /// Bumped on every load, so a reveal pending for an earlier load, even
+    /// of the same message, cannot show the body before the latest one
+    /// has painted.
+    hidden: Rc<Cell<u64>>,
     on_shown: RefCell<Option<ShownHandler>>,
     /// Anchors of the loaded page, by the index in their rewritten href.
     links: RefCell<Vec<Link>>,
@@ -584,6 +596,7 @@ impl Viewer {
             generation: Cell::new(0),
             loading: RefCell::new(None),
             painted: RefCell::new(None),
+            hidden: Rc::new(Cell::new(0)),
             on_shown: RefCell::new(None),
             links: RefCell::new(Vec::new()),
             gpg: RefCell::new(None),
@@ -652,22 +665,19 @@ impl Viewer {
         });
         // A new message's body stays hidden until WebKit has replaced the
         // old one: the web view keeps showing its last frame, the previous
-        // message's body, for a frame or two after the new headers appear.
-        // Finished alone is too late, since it waits for remote images.
-        this.web.connect_load_changed(|web, event| match event {
-            webkit::LoadEvent::Committed => {
-                let frames = Cell::new(0);
-                web.add_tick_callback(move |web, _| {
-                    frames.set(frames.get() + 1);
-                    if frames.get() < REVEAL_FRAMES {
-                        return glib::ControlFlow::Continue;
-                    }
-                    web.set_opacity(1.0);
-                    glib::ControlFlow::Break
-                });
+        // message's body, until the new page paints. Finished must not
+        // reveal it: for load_html it follows Committed at once.
+        let hidden = this.hidden.clone();
+        this.web.connect_load_changed(move |web, event| {
+            if event != webkit::LoadEvent::Committed {
+                return;
             }
-            webkit::LoadEvent::Finished => web.set_opacity(1.0),
-            _ => {}
+            let (web, hidden, token) = (web.clone(), hidden.clone(), hidden.get());
+            glib::timeout_add_local_once(REVEAL_DELAY, move || {
+                if hidden.get() == token {
+                    web.set_opacity(1.0);
+                }
+            });
         });
         this.web.connect_load_failed(|web, _, _, _| {
             web.set_opacity(1.0);
@@ -986,9 +996,10 @@ impl Viewer {
         // change) keep its body visible.
         let key = Some((s.folder.clone(), s.uid.clone()));
         if *self.painted.borrow() != key {
-            self.web.set_opacity(0.0);
+            self.web.set_opacity(HIDDEN_OPACITY);
             *self.painted.borrow_mut() = key;
         }
+        self.hidden.set(self.hidden.get() + 1);
         self.web.load_html(&doc, None);
         self.widget.set_visible_child_name("message");
     }
