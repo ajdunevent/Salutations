@@ -110,7 +110,7 @@ async fn prepare(session: &Session, out: &Outgoing, keys: Option<Keys>, draft: b
             out.autocrypt = Some(crate::crypto::autocrypt_header(&out.from.email, &key));
         }
         let msg = out.headers(draft).map_err(|e| invalid(&e.0))?;
-        let content = out.content_part();
+        let content = out.content_part(draft);
         if draft {
             if out.encrypt {
                 crate::crypto::protect_sync(&ctx, &msg, &content, None, Some(std::slice::from_ref(&keys.signer)))?;

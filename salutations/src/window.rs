@@ -10,6 +10,7 @@ use gtk::{gio, glib};
 use salutations_core::camel::{self, prelude::*};
 use salutations_core::edataserver::SourceRegistry;
 use salutations_core::offline;
+use salutations_core::rules;
 use salutations_core::{Account, Session, Settings, SpecialFolders};
 
 use crate::folder_object::{FolderObject, SyncState};
@@ -27,6 +28,7 @@ mod compose;
 mod import;
 mod keys;
 mod outbox;
+mod rule_runner;
 
 const SEEN: u32 = camel::MessageFlags::SEEN.bits();
 const FLAGGED: u32 = camel::MessageFlags::FLAGGED.bits();
@@ -576,6 +578,7 @@ impl Window {
             let more = gio::Menu::new();
             more.append(Some("_Print…"), Some("win.print"));
             more.append(Some("_Save as file…"), Some("win.save-message"));
+            more.append(Some("Create _rule…"), Some("win.create-rule"));
             let more = gtk::MenuButton::builder()
                 .icon_name("view-more-symbolic")
                 .tooltip_text("More")
@@ -1240,6 +1243,14 @@ impl Window {
             }
         });
         win.add_action(&empty);
+        let weak = Rc::downgrade(self);
+        let create_rule = gio::SimpleAction::new("create-rule", None);
+        create_rule.connect_activate(move |_, _| {
+            if let Some(this) = weak.upgrade() {
+                glib::spawn_future_local(async move { this.create_rule().await });
+            }
+        });
+        win.add_action(&create_rule);
         for (name, f) in [("print", Viewer::print as fn(&Viewer)), ("save-message", Viewer::save_message)] {
             let weak = Rc::downgrade(self);
             let action = gio::SimpleAction::new(name, None);
@@ -1302,26 +1313,14 @@ impl Window {
     }
 
     fn show_preferences(self: &Rc<Self>, open_account: Option<&str>) {
-        fn flatten(store: &gio::ListStore, prefix: &str, out: &mut Vec<(String, String)>) {
-            for i in 0..store.n_items() {
-                let Some(o) = store.item(i).and_downcast::<FolderObject>() else { continue };
-                let path = if prefix.is_empty() { o.title() } else { format!("{prefix} / {}", o.title()) };
-                out.push((o.full_name(), path.clone()));
-                flatten(o.children(), &path, out);
-            }
-        }
         let entries = self
             .accounts
             .borrow()
             .iter()
-            .map(|ctl| {
-                let mut folders = Vec::new();
-                flatten(ctl.obj.children(), "", &mut folders);
-                crate::preferences::AccountEntry {
-                    account: ctl.account.clone(),
-                    store: ctl.store.borrow().clone(),
-                    folders,
-                }
+            .map(|ctl| crate::preferences::AccountEntry {
+                account: ctl.account.clone(),
+                store: ctl.store.borrow().clone(),
+                folders: folder_paths(ctl),
             })
             .collect();
         let weak = Rc::downgrade(self);
@@ -1350,7 +1349,12 @@ impl Window {
                 }
             }
         });
-        crate::preferences::show(&self.window, &self.registry, entries, on_offline, open_account);
+        let weak = Rc::downgrade(self);
+        let apply_rule: crate::rule_editor::ApplyRule = Rc::new(move |uid: &str, rule| {
+            let (Some(this), uid) = (weak.upgrade(), uid.to_string()) else { return };
+            glib::spawn_future_local(async move { this.apply_rule_now(&uid, rule).await });
+        });
+        crate::preferences::show(&self.window, &self.registry, entries, on_offline, apply_rule, open_account);
     }
 
     /// Brings the account's offline copies in line with its settings, in
@@ -2640,7 +2644,7 @@ impl Window {
         self.update_badge();
     }
 
-    fn inbox_changed(&self, ctl: &Rc<AccountCtl>, folder: &camel::Folder, changes: &camel::FolderChanges) {
+    fn inbox_changed(self: &Rc<Self>, ctl: &Rc<AccountCtl>, folder: &camel::Folder, changes: &camel::FolderChanges) {
         if !changes.added.is_empty() {
             self.download_arrivals(ctl, folder);
         }
@@ -2667,9 +2671,10 @@ impl Window {
         self.update_badge();
     }
 
-    /// Notifies about unread messages among `uids` that are newer than any
-    /// considered before.
-    fn notify_new(&self, ctl: &Rc<AccountCtl>, folder: &camel::Folder, uids: &[String]) {
+    /// Runs the account's rules on messages among `uids` that are newer
+    /// than any considered before, then notifies about those still unread
+    /// in INBOX.
+    fn notify_new(self: &Rc<Self>, ctl: &Rc<AccountCtl>, folder: &camel::Folder, uids: &[String]) {
         let last = ctl.last_uid.get().unwrap_or(0);
         let mut fresh: Vec<(u64, String)> =
             uids.iter().filter_map(|u| u.parse::<u64>().ok().map(|n| (n, u.clone()))).filter(|(n, _)| *n > last).collect();
@@ -2680,12 +2685,10 @@ impl Window {
         let top = fresh.last().map_or(last, |(n, _)| *n);
         ctl.last_uid.set(Some(top));
         save_last_uid(&ctl.account.uid, top);
-        const JUNK: u32 = camel::MessageFlags::JUNK.bits();
         let mut expected = ctl.expected.borrow_mut();
         let fresh: Vec<String> = fresh
             .into_iter()
             .map(|(_, u)| u)
-            .filter(|u| folder.message_flags(u) & (SEEN | DELETED | JUNK) == 0)
             .filter(|u| {
                 // A message Salutations moved here is not new mail.
                 let Some(k) = message_key(folder, u) else { return false };
@@ -2699,6 +2702,27 @@ impl Window {
             })
             .collect();
         drop(expected);
+        if fresh.is_empty() {
+            return;
+        }
+        let rules: Vec<rules::Rule> =
+            rules::load(&ctl.account.uid).into_iter().filter(|r| !r.conditions.is_empty() && r.does_anything()).collect();
+        if rules.is_empty() {
+            self.notify_fresh(ctl, folder, fresh);
+            return;
+        }
+        let (this, ctl, folder) = (self.clone(), ctl.clone(), folder.clone());
+        glib::spawn_future_local(async move {
+            let (kept, _) = this.run_rules(&ctl, &folder, fresh, &rules).await;
+            this.notify_fresh(&ctl, &folder, kept);
+        });
+    }
+
+    /// Notifies about the messages among `fresh`, new mail that the rules
+    /// left in INBOX, that are unread.
+    fn notify_fresh(&self, ctl: &Rc<AccountCtl>, folder: &camel::Folder, fresh: Vec<String>) {
+        const JUNK: u32 = camel::MessageFlags::JUNK.bits();
+        let fresh: Vec<String> = fresh.into_iter().filter(|u| folder.message_flags(u) & (SEEN | DELETED | JUNK) == 0).collect();
         if fresh.is_empty() {
             return;
         }
@@ -4002,6 +4026,22 @@ fn all_folder_choices(accounts: &[Rc<AccountCtl>], exclude: Option<(&AccountCtl,
         }
         out.extend(choices);
     }
+    out
+}
+
+/// The account's folders as (full name, path) pairs in tree order, the
+/// path naming each parent: "Lists / Library".
+fn folder_paths(ctl: &AccountCtl) -> Vec<(String, String)> {
+    fn flatten(store: &gio::ListStore, prefix: &str, out: &mut Vec<(String, String)>) {
+        for i in 0..store.n_items() {
+            let Some(o) = store.item(i).and_downcast::<FolderObject>() else { continue };
+            let path = if prefix.is_empty() { o.title() } else { format!("{prefix} / {}", o.title()) };
+            out.push((o.full_name(), path.clone()));
+            flatten(o.children(), &path, out);
+        }
+    }
+    let mut out = Vec::new();
+    flatten(ctl.obj.children(), "", &mut out);
     out
 }
 

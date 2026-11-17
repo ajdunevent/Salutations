@@ -320,6 +320,31 @@ fn collect_attachments(part: &MimePart, html: &str, out: &mut Vec<crate::compose
     });
 }
 
+/// Every header of `medium` in order, values unfolded onto one line.
+pub fn headers(medium: &impl IsA<camel::Medium>) -> Vec<(String, String)> {
+    use glib::translate::ToGlibPtr;
+    let text = |p: *const std::ffi::c_char| {
+        // SAFETY: Camel hands out NUL-terminated strings owned by the array.
+        unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().split_whitespace().collect::<Vec<_>>().join(" ")
+    };
+    // SAFETY: the array belongs to `medium`, which outlives this call, and
+    // is read only.
+    unsafe {
+        let array = camel::ffi::camel_medium_get_headers(medium.as_ref().to_glib_none().0);
+        if array.is_null() {
+            return Vec::new();
+        }
+        let n = camel::ffi::camel_name_value_array_get_length(array);
+        (0..n)
+            .filter_map(|i| {
+                let (mut name, mut value) = (std::ptr::null(), std::ptr::null());
+                let ok = camel::ffi::camel_name_value_array_get(array, i, &mut name, &mut value) != 0;
+                (ok && !name.is_null() && !value.is_null()).then(|| (text(name), text(value)))
+            })
+            .collect()
+    }
+}
+
 /// Bytes of the part whose Content-ID is `cid`, with its MIME type.
 pub fn inline_part(msg: &MimeMessage, cid: &str) -> Option<(Vec<u8>, String)> {
     part_data(&msg.part_by_content_id(cid)?)
@@ -484,7 +509,29 @@ pub fn clean_preview(text: &str) -> String {
     };
     let text = if text.contains('&') { crate::links::decode_entities(&text) } else { text };
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let text = preview_images(&text);
     strip_leading_css(&text).to_string()
+}
+
+/// A draft's text keeps its images as tokens; the preview names them as
+/// the sent text does. A token the preview cuts short is dropped.
+fn preview_images(text: &str) -> String {
+    static CUT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"!\[[^\]]*(\]\(cid:[^)]*)?$").expect("valid regex"));
+    let tokens = crate::compose::image_tokens(text);
+    if tokens.is_empty() && !text.contains("](cid:") {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    let mut last = 0;
+    for t in tokens {
+        out.push_str(&text[last..t.range.start]);
+        let name = t.name.trim();
+        out.push_str(&if name.is_empty() { "[image]".to_string() } else { format!("[image: {name}]") });
+        last = t.range.end;
+    }
+    let rest = &text[last..];
+    out.push_str(CUT.replace(rest, "").trim_end());
+    out
 }
 
 static CSS_SELECTOR: LazyLock<Regex> = LazyLock::new(|| {
@@ -645,6 +692,7 @@ mod tests {
         );
         assert_eq!(clean_preview("table td { padding: 0"), "");
         assert_eq!(clean_preview("Meet at 5 {room 2}"), "Meet at 5 {room 2}");
+        assert_eq!(clean_preview("Look: ![a.png](cid:1@x \"300\") ok ![b.png](cid:2@"), "Look: [image: a.png] ok");
     }
 
     #[test]

@@ -259,6 +259,7 @@ pub fn show(
     registry: &SourceRegistry,
     accounts: Vec<AccountEntry>,
     on_account: AccountChanged,
+    apply_rule: crate::rule_editor::ApplyRule,
     open_account: Option<&str>,
 ) {
     let settings = Settings::get();
@@ -395,7 +396,7 @@ pub fn show(
     // The account's row, to open its settings at once.
     let mut open_row = None;
     if !accounts.is_empty() {
-        let (page, rows) = accounts_page(&dialog, registry, accounts, on_account);
+        let (page, rows) = accounts_page(&dialog, registry, accounts, on_account, apply_rule);
         dialog.add(&page);
         if let Some(uid) = open_account {
             dialog.set_visible_page(&page);
@@ -535,6 +536,7 @@ fn accounts_page(
     registry: &SourceRegistry,
     accounts: Vec<AccountEntry>,
     on_account: AccountChanged,
+    apply_rule: crate::rule_editor::ApplyRule,
 ) -> (adw::PreferencesPage, Rc<RefCell<Vec<AccountRow>>>) {
     let page = adw::PreferencesPage::builder()
         .title("Accounts")
@@ -556,10 +558,12 @@ fn accounts_page(
         let entry = accounts.into_iter().next().expect("one account");
         let title = entry.account.display_name();
         let account = entry.account.clone();
+        let folders = entry.folders.clone();
         page.add(&receiving_group(registry, entry, &title, on_account));
         for g in sending_groups(&account) {
             page.add(&g);
         }
+        page.add(&crate::rule_editor::group(&account.uid, folders, apply_rule));
         return (page, Rc::default());
     }
     // Where mailto: links and other messages started outside a folder
@@ -650,13 +654,14 @@ fn accounts_page(
         let subpage: RefCell<Option<adw::NavigationPage>> = RefCell::new(None);
         let entry = RefCell::new(Some(entry));
         let (dialog, registry, on_account) = (dialog.downgrade(), registry.clone(), on_account.clone());
+        let apply_rule = apply_rule.clone();
         row.connect_activated(move |_| {
             let Some(dialog) = dialog.upgrade() else { return };
             let page = subpage
                 .borrow_mut()
                 .get_or_insert_with(|| {
                     let entry = entry.borrow_mut().take().expect("built once");
-                    account_subpage(&registry, entry, on_account.clone())
+                    account_subpage(&registry, entry, on_account.clone(), apply_rule.clone())
                 })
                 .clone();
             dialog.push_subpage(&page);
@@ -668,14 +673,21 @@ fn accounts_page(
 /// An account UID, its row, and the row's up and down buttons.
 type AccountRow = (String, adw::ActionRow, gtk::Button, gtk::Button);
 
-fn account_subpage(registry: &SourceRegistry, entry: AccountEntry, on_account: AccountChanged) -> adw::NavigationPage {
+fn account_subpage(
+    registry: &SourceRegistry,
+    entry: AccountEntry,
+    on_account: AccountChanged,
+    apply_rule: crate::rule_editor::ApplyRule,
+) -> adw::NavigationPage {
     let name = entry.account.display_name();
     let account = entry.account.clone();
+    let folders = entry.folders.clone();
     let page = adw::PreferencesPage::new();
     page.add(&receiving_group(registry, entry, "Receiving", on_account));
     for g in sending_groups(&account) {
         page.add(&g);
     }
+    page.add(&crate::rule_editor::group(&account.uid, folders, apply_rule));
     let view = adw::ToolbarView::new();
     view.add_top_bar(&adw::HeaderBar::new());
     view.set_content(Some(&page));

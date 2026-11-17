@@ -7,6 +7,7 @@ mod default_app;
 mod folder_object;
 mod fit_stack;
 mod folder_pane;
+mod inline_image;
 mod label_bar;
 mod manage;
 mod message_list;
@@ -19,6 +20,7 @@ mod people;
 mod pull_refresh;
 mod recipients;
 mod row_holder;
+mod rule_editor;
 mod search;
 mod tile_grid;
 mod viewer;
@@ -179,6 +181,13 @@ fn about_dialog() -> adw::AboutDialog {
         &["FFmpeg https://ffmpeg.org", "James Ashton, for compface"],
     );
     d.add_acknowledgement_section(
+        Some("JPEG encoding"),
+        &[
+            "jpeg-encoder https://github.com/vstroebel/jpeg-encoder",
+            "This software is based in part on the work of the Independent JPEG Group",
+        ],
+    );
+    d.add_acknowledgement_section(
         Some("Icons"),
         &["Adwaita icon theme https://gitlab.gnome.org/GNOME/adwaita-icon-theme"],
     );
@@ -200,6 +209,16 @@ fn about_dialog() -> adw::AboutDialog {
         Some("© 1990 James Ashton\n© 2012 Stefano Sabatini"),
         gtk::License::Lgpl21,
         None,
+    );
+    d.add_legal_section(
+        "jpeg-encoder",
+        Some("© 2021 Volker Ströbel\n© 1991-2020 Thomas G. Lane, Guido Vollbeding\n© 2015, 2020 D. R. Commander"),
+        gtk::License::Custom,
+        Some(
+            "Licensed under the <a href=\"https://opensource.org/license/mit\">MIT</a> or \
+             <a href=\"https://www.apache.org/licenses/LICENSE-2.0\">Apache 2.0</a> license, \
+             with the parts from the Independent JPEG Group's software under the IJG license.",
+        ),
     );
     d.add_legal_section(
         "Adwaita icons",

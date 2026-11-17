@@ -70,6 +70,15 @@
   </screenshots>
 
   <releases>
+    <release version="0.2.0" date="2026-11-16">
+      <description>
+        <p>Images in your messages, and rules for new mail.</p>
+        <ul>
+          <li>Embed images in Markdown messages with the Embed button or by dropping them, then crop, scale, stretch, rotate or flip them; large photos are sent at the size they are shown</li>
+          <li>Rules file, mark and star new mail in Inbox, and can be started from any message</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.3" date="2026-11-07">
       <description>
         <p>Second try at eliminating the previous message flash.</p>

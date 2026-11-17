@@ -613,6 +613,15 @@ impl Window {
         if self.compose.borrow().is_none() {
             return;
         }
+        // Images shrunk to their size are sent, not their originals.
+        if self.composer.images_pending() {
+            let this = self.clone();
+            glib::spawn_future_local(async move {
+                this.composer.images_ready().await;
+                this.send_composed();
+            });
+            return;
+        }
         let out = self.composer.outgoing();
         if !out.encrypt {
             self.transmit_composed();

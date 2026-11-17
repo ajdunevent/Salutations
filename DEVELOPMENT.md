@@ -36,6 +36,10 @@ LGPL-2.1-or-later (`bindings/COPYING.LGPL-2.1`), the same as EDS.
   FFmpeg's `libavcodec/xface.c` and `xfacedec.c` (LGPL-2.1-or-later,
   Stefano Sabatini), themselves based on James Ashton's compface,
   including its tables.
+- Images embedded in messages are re-encoded as JPEG with the
+  `jpeg-encoder` crate (MIT or Apache-2.0, and the IJG licence for code
+  from the Independent JPEG Group's libjpeg). This software is based in
+  part on the work of the Independent JPEG Group.
 
 ## Building and running
 

@@ -22,6 +22,7 @@ pub mod summary_headers;
 pub mod trust;
 pub mod xface;
 pub mod render;
+pub mod rules;
 mod session;
 mod settings;
 pub mod verify;

@@ -9,10 +9,44 @@ use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 use salutations_core::Address;
 use salutations_core::camel::prelude::*;
-use salutations_core::compose::{self, Attachment, Format, Outgoing};
+use salutations_core::compose::{self, Attachment, Format, Inline, Outgoing, Size};
 use sourceview5::prelude::*;
 
+use crate::inline_image::{self, SizedImage};
 use crate::recipients::RecipientField;
+
+/// The placeholder GTK gives a child anchor in the buffer's text.
+const ANCHOR: char = '\u{FFFC}';
+
+/// An image embedded in the text.
+struct Image {
+    cid: String,
+    name: String,
+    /// The image as sent: the source, shrunk to its size when that makes
+    /// it smaller.
+    mime_type: String,
+    data: glib::Bytes,
+    /// The image the size applies to, as inserted or cropped: its bytes and
+    /// type, and its picture upright.
+    source: (glib::Bytes, String),
+    /// The source's picture upright, and as turned by the user.
+    upright: gdk::Texture,
+    turn: inline_image::Turn,
+    texture: gdk::Texture,
+    size: Size,
+    /// The image as inserted, for Reset: name, MIME type, data, texture.
+    original: (String, String, glib::Bytes, gdk::Texture),
+    /// Bumped by every change; a shrink finishing for an older one is
+    /// dropped.
+    version: u64,
+}
+
+/// Where an image stands in the text, and the paintable drawn there.
+struct Place {
+    anchor: gtk::TextChildAnchor,
+    cid: String,
+    paintable: SizedImage,
+}
 
 /// What the composer was opened for; the title and the Sent flags follow it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +181,20 @@ pub struct Composer {
     key: RefCell<Option<Attachment>>,
     /// The user removed the key's tile; it is not added again.
     key_removed: Cell<bool>,
+    image_button: gtk::Button,
+    /// Images in the text, by Content-ID. They stay after their place is
+    /// deleted; the message carries only those the text still shows.
+    images: RefCell<Vec<Image>>,
+    places: RefCell<Vec<Place>>,
+    /// How wide an image in the editor may be.
+    image_width: Cell<i32>,
+    /// Deletions of image places under way. GTK's undo history records an
+    /// image's place as a plain character, and not its insertion at all,
+    /// so changes that insert or delete one are kept out of it.
+    image_deletes: Cell<u32>,
+    /// Images being made ready to send.
+    preparing: Cell<u32>,
+    spelling: RefCell<libspelling::TextBufferAdapter>,
 }
 
 /// `labels` keeps the field labels as wide as the widest, so the fields
@@ -264,10 +312,7 @@ impl Composer {
         view.add_css_class("compose-body");
         // Spell checking in the system language, with suggestions in the
         // editor's context menu.
-        let spelling = libspelling::TextBufferAdapter::new(&buffer, &libspelling::Checker::default());
-        view.set_extra_menu(Some(&spelling.menu_model()));
-        view.insert_action_group("spelling", Some(&spelling));
-        spelling.set_enabled(true);
+        let spelling = spell_checker(&buffer, &view);
 
         let tiles = crate::tile_grid::TileGrid::default();
         let show_all = gtk::Button::builder().halign(gtk::Align::Start).css_classes(["flat"]).visible(false).build();
@@ -325,6 +370,8 @@ impl Composer {
             .build();
         let (c, attach_label) = content("mail-attachment-symbolic", "Attach", false);
         let attach = gtk::Button::builder().child(&c).tooltip_text("Attach files").build();
+        let (c, image_label) = content("insert-image-symbolic", "Embed", false);
+        let image_button = gtk::Button::builder().child(&c).tooltip_text("Embed images in the text").build();
         let tools = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         tools.add_css_class("toolbar");
         tools.add_css_class("compose-tools");
@@ -334,10 +381,11 @@ impl Composer {
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
         tools.append(&spacer);
+        tools.append(&image_button);
         tools.append(&attach);
         let tools = crate::label_bar::LabelBar::new(
             &tools,
-            [attach_label, format_label, important_label, signature_label]
+            [attach_label, image_label, format_label, important_label, signature_label]
                 .into_iter()
                 .map(|l| vec![l])
                 .collect(),
@@ -428,6 +476,13 @@ impl Composer {
             setup: Cell::new(None),
             key: RefCell::new(None),
             key_removed: Cell::new(false),
+            image_button,
+            images: RefCell::new(Vec::new()),
+            places: RefCell::new(Vec::new()),
+            image_width: Cell::new(0),
+            image_deletes: Cell::new(0),
+            preparing: Cell::new(0),
+            spelling: RefCell::new(spelling),
         });
         this.connect_crypto();
         this.connect(&discard, &attach);
@@ -457,6 +512,57 @@ impl Composer {
                 this.choose_files(b);
             }
         });
+        let weak = Rc::downgrade(self);
+        self.image_button.connect_clicked(move |b| {
+            if let Some(this) = weak.upgrade() {
+                this.choose_images(b);
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.buffer.connect_mark_set(move |b, _, mark| {
+            if *mark == b.get_insert()
+                && let Some(this) = weak.upgrade()
+            {
+                this.update_cursor();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.buffer.connect_changed(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.update_cursor();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.buffer.connect_delete_range(move |b, start, end| {
+            if let Some(this) = weak.upgrade()
+                && start.slice(end).contains(ANCHOR)
+            {
+                b.begin_irreversible_action();
+                this.image_deletes.set(this.image_deletes.get() + 1);
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.buffer.connect_local("delete-range", true, move |args| {
+            let this = weak.upgrade()?;
+            if this.image_deletes.get() > 0 {
+                this.image_deletes.set(this.image_deletes.get() - 1);
+                args[0].get::<gtk::TextBuffer>().ok()?.end_irreversible_action();
+            }
+            None
+        });
+        if let Some(scroller) = self.view.ancestor(gtk::ScrolledWindow::static_type()).and_downcast::<gtk::ScrolledWindow>() {
+            let weak = Rc::downgrade(self);
+            scroller.hadjustment().connect_page_size_notify(move |adj| {
+                let Some(this) = weak.upgrade() else { return };
+                // The editor's side margins, and room so a full-width
+                // image does not touch them.
+                let width = adj.page_size() as i32 - 24 - 8;
+                if width > 0 && width != this.image_width.get() {
+                    this.image_width.set(width);
+                    this.refresh_images();
+                }
+            });
+        }
         let weak = Rc::downgrade(self);
         self.cc_button.connect_clicked(move |b| {
             if let Some(this) = weak.upgrade() {
@@ -564,19 +670,20 @@ impl Composer {
             glib::Propagation::Proceed
         });
         self.widget.add_controller(keys);
-        // Files dropped anywhere on the composer are attached. Capture
-        // phase, so the fields and the editor do not take them as text.
+        // Files dropped anywhere on the composer are attached, or images
+        // embedded where they were dropped. Capture phase, so the fields
+        // and the editor do not take them as text.
         let drop = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
         drop.set_propagation_phase(gtk::PropagationPhase::Capture);
         let weak = Rc::downgrade(self);
-        drop.connect_drop(move |_, value, _, _| {
+        drop.connect_drop(move |_, value, x, y| {
             let (Some(this), Ok(list)) = (weak.upgrade(), value.get::<gdk::FileList>()) else { return false };
             // A link dragged from a browser also arrives as a file list.
             let files: Vec<gio::File> = list.files().into_iter().filter(|f| f.path().is_some()).collect();
             if files.is_empty() {
                 return false;
             }
-            this.attach_files(files);
+            this.files_dropped(files, x, y);
             true
         });
         self.widget.add_controller(drop);
@@ -835,9 +942,14 @@ impl Composer {
         self.format.state().and_then(|v| v.get::<String>()).and_then(|k| Format::from_key(&k)).unwrap_or_default()
     }
 
-    fn update_format(&self) {
+    fn update_format(self: &Rc<Self>) {
         self.format_button.set_tooltip_text(Some(&format!("Format: {}", self.format().label())));
         self.update_language();
+        let markdown = self.format() == Format::Markdown;
+        self.image_button.set_visible(markdown);
+        if !markdown && !self.loading.get() {
+            self.images_to_attachments();
+        }
     }
 
     fn update_language(&self) {
@@ -847,9 +959,69 @@ impl Composer {
         self.buffer.set_language(lang.as_ref());
     }
 
-    fn text(&self) -> String {
+    /// The buffer's text with [`ANCHOR`] at each image, so offsets match
+    /// the buffer's.
+    fn slice(&self) -> String {
         let (start, end) = self.buffer.bounds();
-        self.buffer.text(&start, &end, false).to_string()
+        self.buffer.slice(&start, &end, true).to_string()
+    }
+
+    /// The text as sent: each image as its image token.
+    fn text(&self) -> String {
+        let slice = self.slice();
+        if !slice.contains(ANCHOR) {
+            return slice;
+        }
+        let mut out = String::with_capacity(slice.len());
+        for (offset, c) in slice.chars().enumerate() {
+            if c != ANCHOR {
+                out.push(c);
+                continue;
+            }
+            let anchor = self.buffer.iter_at_offset(offset as i32).child_anchor();
+            if let Some(token) = anchor.and_then(|a| self.token(&a)) {
+                out.push_str(&token);
+            }
+        }
+        out
+    }
+
+    fn token(&self, anchor: &gtk::TextChildAnchor) -> Option<String> {
+        let places = self.places.borrow();
+        let cid = &places.iter().find(|p| p.anchor == *anchor)?.cid;
+        let images = self.images.borrow();
+        let image = images.iter().find(|i| i.cid == *cid)?;
+        Some(compose::image_token(&image.name, cid, image.size))
+    }
+
+    /// Replaces the text, showing image tokens for known images as the
+    /// images. Not undoable.
+    fn set_body(self: &Rc<Self>, text: &str) {
+        let b = &self.buffer;
+        b.begin_irreversible_action();
+        b.set_text("");
+        self.places.borrow_mut().clear();
+        let mut end = b.end_iter();
+        let mut last = 0;
+        if self.format() == Format::Markdown {
+            for t in compose::image_tokens(text) {
+                let known = match self.images.borrow_mut().iter_mut().find(|i| i.cid == t.cid) {
+                    Some(image) => {
+                        image.size = t.size;
+                        true
+                    }
+                    None => false,
+                };
+                if !known {
+                    continue;
+                }
+                b.insert(&mut end, &text[last..t.range.start]);
+                self.insert_place(&mut end, &t.cid);
+                last = t.range.end;
+            }
+        }
+        b.insert(&mut end, &text[last..]);
+        b.end_irreversible_action();
     }
 
     /// Fills the composer. `froms` holds every account's addresses, the
@@ -913,10 +1085,28 @@ impl Composer {
             out.body.clone()
         };
         self.signature.set_active(include_signature && !signature.trim().is_empty());
+        *self.images.borrow_mut() = out
+            .inline
+            .iter()
+            .filter_map(|i| {
+                let texture = inline_image::decode(&i.data)?;
+                Some(Image {
+                    cid: i.cid.clone(),
+                    name: i.name.clone(),
+                    mime_type: i.mime_type.clone(),
+                    data: i.data.clone(),
+                    source: (i.data.clone(), i.mime_type.clone()),
+                    upright: texture.clone(),
+                    turn: Default::default(),
+                    texture: texture.clone(),
+                    size: Size::Natural,
+                    original: (i.name.clone(), i.mime_type.clone(), i.data.clone(), texture),
+                    version: 0,
+                })
+            })
+            .collect();
         self.signature_internal.set(true);
-        self.buffer.begin_irreversible_action();
-        self.buffer.set_text(&body);
-        self.buffer.end_irreversible_action();
+        self.set_body(&body);
         self.signature_internal.set(false);
         self.mark_signature(self.signature.is_active());
         self.buffer.place_cursor(&self.buffer.start_iter());
@@ -958,6 +1148,12 @@ impl Composer {
             forwarded_id: self.forwarded_id.borrow().clone(),
             references: self.references.borrow().clone(),
             attachments: self.attachments.borrow().clone(),
+            inline: self
+                .images
+                .borrow()
+                .iter()
+                .map(|i| Inline { cid: i.cid.clone(), name: i.name.clone(), mime_type: i.mime_type.clone(), data: i.data.clone() })
+                .collect(),
             forwarded: self.forwarded.borrow().clone(),
             autocrypt: None,
             sign: self.protection() != Protection::None,
@@ -1019,7 +1215,7 @@ impl Composer {
     }
 
     /// Adds or removes the signature where `load` would have put it.
-    fn apply_signature(&self, on: bool) {
+    fn apply_signature(self: &Rc<Self>, on: bool) {
         let sig = self.signature_text.borrow().clone();
         if sig.is_empty() {
             return;
@@ -1034,7 +1230,7 @@ impl Composer {
             if after.is_empty() { format!("{before}\n") } else { format!("{before}\n\n{after}") }
         };
         self.signature_internal.set(true);
-        self.buffer.set_text(&new);
+        self.set_body(&new);
         self.signature_internal.set(false);
         self.mark_signature(on);
     }
@@ -1050,7 +1246,7 @@ impl Composer {
         if !on || sig.is_empty() {
             return;
         }
-        let text = self.text();
+        let text = self.slice();
         let found = if self.signature_above.get() { text.find(&sig) } else { text.rfind(&sig) };
         let Some(at) = found else { return };
         let start = text[..at].chars().count() as i32;
@@ -1085,6 +1281,433 @@ impl Composer {
         self.signature_internal.set(true);
         self.signature.set_active(false);
         self.signature_internal.set(false);
+    }
+
+    /// GTK draws the cursor as tall as its line, which beside an image is
+    /// the image's height; on such a line it is hidden.
+    fn update_cursor(&self) {
+        let mut start = self.buffer.iter_at_mark(&self.buffer.get_insert());
+        start.set_line_offset(0);
+        let mut end = start;
+        if !end.ends_line() {
+            end.forward_to_line_end();
+        }
+        self.view.set_cursor_visible(!start.slice(&end).contains(ANCHOR));
+    }
+
+    /// The width images in the editor are narrowed to.
+    fn max_image_width(&self) -> i32 {
+        match self.image_width.get() {
+            w if w > 0 => w,
+            _ => inline_image::START_WIDTH as i32,
+        }
+    }
+
+    /// Puts the image `cid` at `iter`, which ends up after it.
+    fn insert_place(self: &Rc<Self>, iter: &mut gtk::TextIter, cid: &str) {
+        let found = self.images.borrow().iter().find(|i| i.cid == cid).map(|i| (i.texture.clone(), i.size));
+        let Some((texture, size)) = found else { return };
+        let shown = inline_image::shown_size(size, (texture.width(), texture.height()), self.max_image_width());
+        let paintable = SizedImage::new(&texture, shown);
+        self.buffer.begin_irreversible_action();
+        let anchor = self.buffer.create_child_anchor(iter);
+        self.buffer.end_irreversible_action();
+        self.restart_spelling();
+        let actions = self.image_actions(&anchor, cid);
+        let weak = Rc::downgrade(self);
+        // The menu hangs from the composer: a popover inside the text view
+        // moves focus into it, which scrolls the editor and closes it.
+        let widget = inline_image::widget(&paintable, move |from, point| {
+            let Some(this) = weak.upgrade() else { return };
+            let menu = gtk::PopoverMenu::from_model(Some(&image_menu()));
+            menu.insert_action_group("image", Some(&actions));
+            menu.set_parent(&this.widget);
+            let target = match point {
+                Some((x, y)) => from
+                    .compute_point(&this.widget, &gtk::graphene::Point::new(x as f32, y as f32))
+                    .map(|p| gdk::Rectangle::new(p.x() as i32, p.y() as i32, 1, 1)),
+                None => from
+                    .compute_bounds(&this.widget)
+                    .map(|b| gdk::Rectangle::new(b.x() as i32, b.y() as i32, b.width() as i32, b.height() as i32)),
+            };
+            menu.set_pointing_to(target.as_ref());
+            let view = this.view.downgrade();
+            menu.connect_closed(move |m| {
+                let (m, view) = (m.clone(), view.clone());
+                glib::idle_add_local_once(move || {
+                    m.unparent();
+                    // Focus would otherwise stay with the closed menu.
+                    if let Some(v) = view.upgrade() {
+                        v.grab_focus();
+                    }
+                });
+            });
+            menu.popup();
+        });
+        self.view.add_child_at_anchor(&widget, &anchor);
+        self.places.borrow_mut().push(Place { anchor, cid: cid.to_string(), paintable });
+    }
+
+    /// libspelling follows the buffer's length through GTK's commit
+    /// notifications, which an inserted image does not send; typing past an
+    /// image then failed its assertion (`offset <= region->length`) and
+    /// aborted. A new checker starts from the buffer's real length.
+    fn restart_spelling(&self) {
+        let old = self.spelling.replace(spell_checker(&self.buffer, &self.view));
+        let underline = old.tag();
+        // SAFETY: nothing uses the old checker after this; disposing it
+        // removes its commit notification before the next edit reaches it.
+        unsafe { old.run_dispose() };
+        if let Some(tag) = underline {
+            self.buffer.tag_table().remove(&tag);
+        }
+    }
+
+    /// Redraws every image in the editor at its size.
+    fn refresh_images(&self) {
+        let max = self.max_image_width();
+        self.places.borrow_mut().retain(|p| !p.anchor.is_deleted());
+        let images = self.images.borrow();
+        for p in self.places.borrow().iter() {
+            if let Some(i) = images.iter().find(|i| i.cid == p.cid) {
+                p.paintable.set(&i.texture, inline_image::shown_size(i.size, (i.texture.width(), i.texture.height()), max));
+            }
+        }
+    }
+
+    fn change_image(self: &Rc<Self>, cid: &str, f: impl FnOnce(&mut Image)) {
+        if let Some(i) = self.images.borrow_mut().iter_mut().find(|i| i.cid == cid) {
+            f(i);
+        }
+        self.prepare_image(cid);
+        self.refresh_images();
+        self.edited();
+    }
+
+    /// Makes the bytes sent for image `cid` from its source at its size,
+    /// off the main thread.
+    fn prepare_image(self: &Rc<Self>, cid: &str) {
+        let job = {
+            let mut images = self.images.borrow_mut();
+            let Some(i) = images.iter_mut().find(|i| i.cid == cid) else { return };
+            i.version += 1;
+            let target = inline_image::sent_pixels(i.size, (i.texture.width(), i.texture.height()));
+            (i.version, i.texture.clone(), i.source.clone(), target, !i.turn.is_none())
+        };
+        let (version, texture, (data, mime), target, turned) = job;
+        self.preparing.set(self.preparing.get() + 1);
+        let (this, cid) = (self.clone(), cid.to_string());
+        glib::spawn_future_local(async move {
+            let out = gio::spawn_blocking(move || inline_image::prepare(&texture, &data, &mime, target, turned)).await;
+            this.preparing.set(this.preparing.get() - 1);
+            if let Ok((data, mime)) = out
+                && let Some(i) = this.images.borrow_mut().iter_mut().find(|i| i.cid == cid && i.version == version)
+            {
+                (i.data, i.mime_type) = (data, mime);
+            }
+        });
+    }
+
+    /// Whether images are still being made ready to send.
+    pub fn images_pending(&self) -> bool {
+        self.preparing.get() > 0
+    }
+
+    /// Waits for [`Self::images_pending`] to end.
+    pub async fn images_ready(&self) {
+        while self.images_pending() {
+            glib::timeout_future(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    /// The actions of one image's menu.
+    fn image_actions(self: &Rc<Self>, anchor: &gtk::TextChildAnchor, cid: &str) -> gio::SimpleActionGroup {
+        let group = gio::SimpleActionGroup::new();
+        let action = |name: &str, param: Option<&glib::VariantTy>| {
+            let a = gio::SimpleAction::new(name, param);
+            group.add_action(&a);
+            a
+        };
+        let (weak, id) = (Rc::downgrade(self), cid.to_string());
+        action("crop", None).connect_activate(move |_, _| {
+            let (Some(this), id) = (weak.upgrade(), id.clone()) else { return };
+            glib::spawn_future_local(async move { this.crop_image(&id).await });
+        });
+        let (weak, id) = (Rc::downgrade(self), cid.to_string());
+        action("scale", None).connect_activate(move |_, _| {
+            let (Some(this), id) = (weak.upgrade(), id.clone()) else { return };
+            glib::spawn_future_local(async move {
+                let found = this.images.borrow().iter().find(|i| i.cid == id).map(|i| {
+                    let pixels = (i.texture.width(), i.texture.height());
+                    (inline_image::css_size(i.size, pixels), pixels)
+                });
+                let Some((current, pixels)) = found else { return };
+                if let Some((w, _)) = inline_image::scale_dialog(&this.widget, current, pixels).await {
+                    this.change_image(&id, |i| i.size = Size::Width(w));
+                }
+            });
+        });
+        let (weak, id) = (Rc::downgrade(self), cid.to_string());
+        action("stretch", None).connect_activate(move |_, _| {
+            let (Some(this), id) = (weak.upgrade(), id.clone()) else { return };
+            glib::spawn_future_local(async move {
+                let current = this
+                    .images
+                    .borrow()
+                    .iter()
+                    .find(|i| i.cid == id)
+                    .map(|i| inline_image::css_size(i.size, (i.texture.width(), i.texture.height())));
+                let Some(current) = current else { return };
+                if let Some((w, h)) = inline_image::stretch_dialog(&this.widget, current).await {
+                    this.change_image(&id, |i| i.size = Size::Stretched(w, h));
+                }
+            });
+        });
+        let (weak, id) = (Rc::downgrade(self), cid.to_string());
+        action("reset", None).connect_activate(move |_, _| {
+            let Some(this) = weak.upgrade() else { return };
+            this.change_image(&id, |i| {
+                let (name, mime, data, texture) = i.original.clone();
+                i.size = inline_image::start_size((texture.width(), texture.height()));
+                i.source = (data.clone(), mime.clone());
+                (i.upright, i.turn) = (texture.clone(), Default::default());
+                (i.name, i.mime_type, i.data, i.texture) = (name, mime, data, texture);
+            });
+        });
+        for (name, rotate) in [("rotate", true), ("flip", false)] {
+            let (weak, id) = (Rc::downgrade(self), cid.to_string());
+            action(name, None).connect_activate(move |_, _| {
+                let (Some(this), id) = (weak.upgrade(), id.clone()) else { return };
+                glib::spawn_future_local(async move { this.turn_image(&id, rotate).await });
+            });
+        }
+        let (weak, anchor) = (Rc::downgrade(self), anchor.clone());
+        action("remove", None).connect_activate(move |_, _| {
+            let (weak, anchor) = (weak.clone(), anchor.clone());
+            // Not from inside the menu: removing the place destroys it.
+            glib::idle_add_local_once(move || {
+                let Some(this) = weak.upgrade() else { return };
+                if anchor.is_deleted() {
+                    return;
+                }
+                let mut start = this.buffer.iter_at_child_anchor(&anchor);
+                let mut end = start;
+                end.forward_char();
+                this.buffer.delete(&mut start, &mut end);
+                this.buffer.place_cursor(&start);
+            });
+        });
+        group
+    }
+
+    async fn crop_image(self: &Rc<Self>, cid: &str) {
+        let found = self.images.borrow().iter().find(|i| i.cid == cid).map(|i| (i.texture.clone(), i.name.clone(), i.source.1.clone()));
+        let Some((texture, name, mime)) = found else { return };
+        let Some(rect) = inline_image::crop_dialog(&self.widget, &texture).await else { return };
+        let t = texture.clone();
+        let Ok((data, cropped_mime)) = gio::spawn_blocking(move || inline_image::crop(&t, rect, &mime)).await else { return };
+        let Some(cropped) = inline_image::decode(&data) else { return };
+        self.change_image(cid, |i| {
+            // A stretched image keeps its width; the height follows the crop.
+            if let Size::Stretched(w, _) = i.size {
+                i.size = Size::Width(w);
+            }
+            if cropped_mime != i.source.1 {
+                i.name = inline_image::png_name(&name);
+            }
+            // The crop is of the turned picture, which becomes the source.
+            i.source = (data.clone(), cropped_mime.clone());
+            (i.upright, i.turn) = (cropped.clone(), Default::default());
+            (i.mime_type, i.data, i.texture) = (cropped_mime, data, cropped);
+        });
+    }
+
+    /// Turns image `cid` a quarter turn clockwise, or mirrors it left to
+    /// right.
+    async fn turn_image(self: &Rc<Self>, cid: &str, rotate: bool) {
+        // The turn is recorded at once, so quick repeats each count.
+        let found = self.images.borrow_mut().iter_mut().find(|i| i.cid == cid).map(|i| {
+            if rotate {
+                // The shown size turns with the picture: 600 × 400 becomes
+                // 400 × 600. The picture's size before this turn comes from
+                // the turn, since its texture may not have caught up.
+                let (w, h) = (i.upright.width(), i.upright.height());
+                let before = if i.turn.quarters % 2 == 1 { (h, w) } else { (w, h) };
+                i.size = match i.size {
+                    Size::Width(_) => Size::Width(inline_image::css_size(i.size, before).1.max(1) as u32),
+                    Size::Stretched(w, h) => Size::Stretched(h, w),
+                    Size::Natural => Size::Natural,
+                };
+            }
+            i.turn = if rotate { i.turn.rotated() } else { i.turn.flipped() };
+            (i.upright.clone(), i.turn)
+        });
+        let Some((upright, turn)) = found else { return };
+        let Ok(texture) = gio::spawn_blocking(move || inline_image::turned(&upright, turn)).await else { return };
+        let current = self.images.borrow().iter().any(|i| i.cid == cid && i.turn == turn);
+        if current {
+            self.change_image(cid, |i| i.texture = texture);
+        }
+    }
+
+    fn choose_images(self: &Rc<Self>, button: &impl IsA<gtk::Widget>) {
+        let filter = gtk::FileFilter::new();
+        filter.set_name(Some("Images"));
+        filter.add_mime_type("image/*");
+        let filters = gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&filter);
+        let dialog = gtk::FileDialog::builder().title("Insert images").modal(true).filters(&filters).build();
+        let parent = button.root().and_downcast::<gtk::Window>();
+        let weak = Rc::downgrade(self);
+        dialog.open_multiple(parent.as_ref(), None::<&gio::Cancellable>, move |result| {
+            let (Some(this), Ok(model)) = (weak.upgrade(), result) else { return };
+            let files: Vec<gio::File> = (0..model.n_items()).filter_map(|i| model.item(i).and_downcast()).collect();
+            let at = this.buffer.create_mark(None, &this.buffer.iter_at_mark(&this.buffer.get_insert()), false);
+            glib::spawn_future_local(async move { this.embed_files(files, at).await });
+        });
+    }
+
+    /// Files dropped at (`x`, `y`) on the composer. In a Markdown message,
+    /// images can go into the text there; everything else is attached.
+    fn files_dropped(self: &Rc<Self>, files: Vec<gio::File>, x: f64, y: f64) {
+        if self.format() != Format::Markdown {
+            self.attach_files(files);
+            return;
+        }
+        let is_image = |f: &gio::File| {
+            let name = f.basename().map(|b| b.to_string_lossy().into_owned()).unwrap_or_default();
+            let (ct, _) = gio::content_type_guess(Some(&name), None);
+            gio::content_type_get_mime_type(&ct).is_some_and(|m| m.starts_with("image/"))
+        };
+        let (images, others): (Vec<gio::File>, Vec<gio::File>) = files.into_iter().partition(is_image);
+        if !others.is_empty() {
+            self.attach_files(others);
+        }
+        if images.is_empty() {
+            return;
+        }
+        let iter = inline_image::iter_at_point(&self.widget, &self.view, x, y)
+            .unwrap_or_else(|| self.buffer.iter_at_mark(&self.buffer.get_insert()));
+        let at = self.buffer.create_mark(None, &iter, false);
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let body = if images.len() == 1 {
+                "An embedded image shows in the text where it was dropped.".to_string()
+            } else {
+                format!("Embedded images show in the text where they were dropped ({} images).", images.len())
+            };
+            let dialog = adw::AlertDialog::new(Some("Embed here or attach?"), Some(&body));
+            dialog.add_responses(&[("cancel", "_Cancel"), ("attach", "_Attach"), ("embed", "_Embed")]);
+            dialog.set_response_appearance("embed", adw::ResponseAppearance::Suggested);
+            dialog.set_default_response(Some("embed"));
+            dialog.set_close_response("cancel");
+            match dialog.choose_future(Some(&this.widget)).await.as_str() {
+                "embed" => this.embed_files(images, at).await,
+                "attach" => {
+                    this.buffer.delete_mark(&at);
+                    this.attach_files(images);
+                }
+                _ => this.buffer.delete_mark(&at),
+            }
+        });
+    }
+
+    /// Reads `files` and puts them into the text at `at`, each on a line of
+    /// its own, in order; deletes the mark after. A file GTK cannot show is
+    /// attached instead.
+    async fn embed_files(self: &Rc<Self>, files: Vec<gio::File>, at: gtk::TextMark) {
+        let from = self.froms.borrow().get(self.from.selected() as usize).map(|c| c.address.email.clone()).unwrap_or_default();
+        for file in files {
+            let name = file.basename().map(|b| b.to_string_lossy().into_owned()).unwrap_or_else(|| "image".into());
+            let data = match file.load_contents_future().await {
+                Ok((data, _)) => glib::Bytes::from_owned(data),
+                Err(e) => {
+                    self.set_status(Some(&format!("Cannot insert {name}: {}", e.message())));
+                    continue;
+                }
+            };
+            let d = data.clone();
+            let texture = gio::spawn_blocking(move || inline_image::decode(&d)).await.ok().flatten();
+            let (ct, _) = gio::content_type_guess(Some(&name), &data[..]);
+            let mime = gio::content_type_get_mime_type(&ct).map(|m| m.to_string()).unwrap_or_else(|| "application/octet-stream".into());
+            let Some(texture) = texture else {
+                self.set_status(Some(&format!("{name} cannot be shown in the text, so it was attached")));
+                self.attachments.borrow_mut().push(Attachment { name, mime_type: mime, data });
+                self.refresh_attachments();
+                self.edited();
+                continue;
+            };
+            let cid = compose::new_content_id(&from);
+            self.images.borrow_mut().push(Image {
+                cid: cid.clone(),
+                name: name.clone(),
+                mime_type: mime.clone(),
+                data: data.clone(),
+                source: (data.clone(), mime.clone()),
+                upright: texture.clone(),
+                turn: Default::default(),
+                texture: texture.clone(),
+                size: inline_image::start_size((texture.width(), texture.height())),
+                original: (name, mime, data, texture),
+                version: 0,
+            });
+            self.prepare_image(&cid);
+            if at.is_deleted() {
+                return;
+            }
+            let mut iter = self.buffer.iter_at_mark(&at);
+            if !iter.starts_line() {
+                self.buffer.insert(&mut iter, "\n");
+            }
+            self.insert_place(&mut iter, &cid);
+            // The cursor goes to the line after the image, where typing
+            // continues the text.
+            if !iter.ends_line() || iter.is_end() {
+                self.buffer.insert(&mut iter, "\n");
+            } else {
+                iter.forward_line();
+            }
+            self.buffer.place_cursor(&iter);
+        }
+        self.buffer.delete_mark(&at);
+        self.view.grab_focus();
+    }
+
+    /// Plain text cannot show images: the ones in the text become
+    /// attachments.
+    fn images_to_attachments(self: &Rc<Self>) {
+        let places: Vec<(gtk::TextChildAnchor, String)> = self
+            .places
+            .borrow()
+            .iter()
+            .filter(|p| !p.anchor.is_deleted())
+            .map(|p| (p.anchor.clone(), p.cid.clone()))
+            .collect();
+        if places.is_empty() {
+            return;
+        }
+        let several = places.len() > 1;
+        let mut moved: Vec<String> = Vec::new();
+        for (anchor, cid) in places {
+            let mut start = self.buffer.iter_at_child_anchor(&anchor);
+            let mut end = start;
+            end.forward_char();
+            self.buffer.delete(&mut start, &mut end);
+            if moved.contains(&cid) {
+                continue;
+            }
+            if let Some(i) = self.images.borrow().iter().find(|i| i.cid == cid) {
+                self.attachments.borrow_mut().push(Attachment { name: i.name.clone(), mime_type: i.mime_type.clone(), data: i.data.clone() });
+            }
+            moved.push(cid);
+        }
+        self.places.borrow_mut().clear();
+        self.refresh_attachments();
+        self.set_status(Some(if several {
+            "Plain text cannot show images, so the images were attached"
+        } else {
+            "Plain text cannot show images, so the image was attached"
+        }));
     }
 
     fn choose_files(self: &Rc<Self>, button: &impl IsA<gtk::Widget>) {
@@ -1173,4 +1796,28 @@ impl Composer {
         self.tiles.set_tiles(tiles);
         self.attachments_box.set_visible(any);
     }
+}
+
+/// The menu over each image in the editor. One section: with Reset and
+/// Remove in a second, GTK measured the menu short and it scrolled.
+fn image_menu() -> gio::Menu {
+    let menu = gio::Menu::new();
+    menu.append(Some("_Crop…"), Some("image.crop"));
+    menu.append(Some("_Scale…"), Some("image.scale"));
+    menu.append(Some("S_tretch…"), Some("image.stretch"));
+    menu.append(Some("R_otate"), Some("image.rotate"));
+    menu.append(Some("_Flip"), Some("image.flip"));
+    menu.append(Some("_Reset"), Some("image.reset"));
+    menu.append(Some("Re_move"), Some("image.remove"));
+    menu
+}
+
+/// Spell checking in the system language, with suggestions in the editor's
+/// context menu.
+fn spell_checker(buffer: &sourceview5::Buffer, view: &sourceview5::View) -> libspelling::TextBufferAdapter {
+    let spelling = libspelling::TextBufferAdapter::new(buffer, &libspelling::Checker::default());
+    view.set_extra_menu(Some(&spelling.menu_model()));
+    view.insert_action_group("spelling", Some(&spelling));
+    spelling.set_enabled(true);
+    spelling
 }

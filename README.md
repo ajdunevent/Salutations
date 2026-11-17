@@ -42,6 +42,10 @@ for an account in Settings and it shows up, folders and all.
 - Star, mark read, move, archive, Junk and Trash, all with undo. The list
   responds at once, so clearing out a full inbox never waits on the
   server.
+- Rules that mark, star or file new mail as it arrives, by sender,
+  recipients, subject, mailing list, any header, attachments, sender
+  verification or whether the sender is in your contacts. Start one from
+  any message, and run it once on what is already in your inbox.
 - Selection mode for working through many messages, with quick
   selection of all read, unread, starred or unstarred messages.
 - Search a folder, an account or every account, including message
@@ -54,6 +58,9 @@ for an account in Settings and it shows up, folders and all.
 ## Writing
 
 - Plain text, or Markdown sent as formatted mail.
+- Images right in the text, embedded with a button or by dropping them,
+  then cropped, scaled, stretched, rotated or flipped. Large photos are
+  sent at the size they are shown, not at full size.
 - Recipient completion from your address books, attachments by drag and
   drop, and spell checking.
 - Drafts are saved to the server as you write, and mail written offline

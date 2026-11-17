@@ -3,7 +3,8 @@
 //!
 //! Plain text is sent as `format=flowed` (RFC 3676). Markdown is sent as
 //! `multipart/alternative`: its source as the flowed plain-text part and the
-//! rendered HTML as the second part.
+//! rendered HTML as the second part. Images in the text go beside the
+//! alternative in a `multipart/related`, shown through `cid:`.
 
 use std::sync::LazyLock;
 
@@ -59,6 +60,95 @@ pub struct Attachment {
     pub data: glib::Bytes,
 }
 
+/// An image shown in a Markdown message's text. The text holds it as an
+/// image token, `![name](cid:ID)`, optionally titled with its shown size:
+/// `"W"` (proportional) or `"WxH"` (stretched), in CSS pixels.
+#[derive(Debug, Clone)]
+pub struct Inline {
+    /// The Content-ID, without angle brackets.
+    pub cid: String,
+    pub name: String,
+    pub mime_type: String,
+    pub data: glib::Bytes,
+}
+
+/// The shown size of an inline image, from its token's title.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Size {
+    /// As large as the image, narrowed to the message's width.
+    #[default]
+    Natural,
+    /// This wide, with the height in proportion.
+    Width(u32),
+    /// Exactly this size.
+    Stretched(u32, u32),
+}
+
+impl Size {
+    pub fn parse(title: &str) -> Size {
+        let t = title.trim();
+        if let Some((w, h)) = t.split_once('x')
+            && let (Ok(w), Ok(h)) = (w.parse::<u32>(), h.parse::<u32>())
+            && w > 0
+            && h > 0
+        {
+            return Size::Stretched(w, h);
+        }
+        match t.parse::<u32>() {
+            Ok(w) if w > 0 => Size::Width(w),
+            _ => Size::Natural,
+        }
+    }
+
+    pub fn title(self) -> Option<String> {
+        match self {
+            Size::Natural => None,
+            Size::Width(w) => Some(w.to_string()),
+            Size::Stretched(w, h) => Some(format!("{w}x{h}")),
+        }
+    }
+}
+
+/// One image token found in the text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Token {
+    /// Byte range of the whole token.
+    pub range: std::ops::Range<usize>,
+    pub name: String,
+    pub cid: String,
+    pub size: Size,
+}
+
+/// The `![name](cid:ID "size")` tokens in `text`, in order.
+pub fn image_tokens(text: &str) -> Vec<Token> {
+    static TOKEN: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"!\[([^\]\n]*)\]\(cid:([^\s()"]+)(?:\s+"([^"\n]*)")?\)"#).expect("valid regex")
+    });
+    TOKEN
+        .captures_iter(text)
+        .map(|c| Token {
+            range: c.get(0).expect("match").range(),
+            name: c[1].to_string(),
+            cid: c[2].to_string(),
+            size: c.get(3).map_or(Size::Natural, |t| Size::parse(t.as_str())),
+        })
+        .collect()
+}
+
+/// The token for an image, as the composer writes it into the text.
+pub fn image_token(name: &str, cid: &str, size: Size) -> String {
+    let name: String = name.chars().map(|c| if matches!(c, '[' | ']' | '\n') { ' ' } else { c }).collect();
+    match size.title() {
+        Some(t) => format!("![{name}](cid:{cid} \"{t}\")"),
+        None => format!("![{name}](cid:{cid})"),
+    }
+}
+
+/// A new Content-ID for an image in mail from `from`.
+pub fn new_content_id(from: &str) -> String {
+    new_message_id(from)
+}
+
 /// What the composer holds.
 #[derive(Debug, Clone, Default)]
 pub struct Outgoing {
@@ -76,6 +166,9 @@ pub struct Outgoing {
     pub in_reply_to: Option<String>,
     pub references: Vec<String>,
     pub attachments: Vec<Attachment>,
+    /// Images the text shows through image tokens; ones the text no longer
+    /// names are left out of the message.
+    pub inline: Vec<Inline>,
     /// Forwarded as an attachment (`message/rfc822`).
     pub forwarded: Option<MimeMessage>,
     /// The value of the Autocrypt header carrying the sender's key.
@@ -185,7 +278,7 @@ impl Outgoing {
     /// fields are kept as typed in a draft and refused for sending.
     pub fn build(&self, draft: bool) -> Result<MimeMessage, BadAddress> {
         let msg = self.headers(draft)?;
-        set_body(&msg, &self.content_part());
+        set_body(&msg, &self.content_part(draft));
         Ok(msg)
     }
 
@@ -235,9 +328,10 @@ impl Outgoing {
     }
 
     /// Everything under the headers: the text, and the attachments with it.
-    /// Signing and encryption wrap this part.
-    pub fn content_part(&self) -> MimePart {
-        let body = self.body_part();
+    /// Signing and encryption wrap this part. A draft keeps the image
+    /// tokens in its plain text, so reopening it puts the images back.
+    pub fn content_part(&self, draft: bool) -> MimePart {
+        let body = self.body_part(draft);
         if self.attachments.is_empty() && self.forwarded.is_none() {
             return body;
         }
@@ -262,12 +356,14 @@ impl Outgoing {
         part
     }
 
-    fn body_part(&self) -> MimePart {
-        let plain = text_part(&flowed(&self.body), "text/plain; charset=utf-8; format=flowed");
+    fn body_part(&self, draft: bool) -> MimePart {
         if self.format == Format::Plain {
-            return plain;
+            return text_part(&flowed(&self.body), "text/plain; charset=utf-8; format=flowed");
         }
-        let html = text_part(&markdown_html(&self.body), "text/html; charset=utf-8");
+        let used = self.used_inline();
+        let text = if draft { self.body.clone() } else { plain_images(&self.body, &used) };
+        let plain = text_part(&flowed(&text), "text/plain; charset=utf-8; format=flowed");
+        let html = text_part(&markdown_html_with(&self.body, &used), "text/html; charset=utf-8");
         let alt = Multipart::new();
         alt.set_mime_type("multipart/alternative");
         alt.set_boundary(None);
@@ -275,7 +371,34 @@ impl Outgoing {
         alt.add_part(&html);
         let part = MimePart::new();
         MediumExt::set_content(&part, Some(&alt));
-        part
+        if used.is_empty() {
+            return part;
+        }
+        let related = Multipart::new();
+        // RFC 2387's type parameter names the root part.
+        related.set_mime_type("multipart/related; type=\"multipart/alternative\"");
+        related.set_boundary(None);
+        related.add_part(&part);
+        for i in &used {
+            related.add_part(&inline_part(i));
+        }
+        let out = MimePart::new();
+        MediumExt::set_content(&out, Some(&related));
+        out
+    }
+
+    /// The inline images the text still shows, each once, in text order.
+    fn used_inline(&self) -> Vec<Inline> {
+        let mut used: Vec<Inline> = Vec::new();
+        for t in image_tokens(&self.body) {
+            if used.iter().any(|u| u.cid == t.cid) {
+                continue;
+            }
+            if let Some(i) = self.inline.iter().find(|i| i.cid == t.cid) {
+                used.push(i.clone());
+            }
+        }
+        used
     }
 }
 
@@ -302,6 +425,34 @@ fn text_part(text: &str, content_type: &str) -> MimePart {
         camel::TransferEncoding::EncodingQuotedprintable
     });
     part
+}
+
+fn inline_part(i: &Inline) -> MimePart {
+    let part = MimePart::new();
+    MimePartExt::set_content(&part, &i.data, Some(&i.mime_type));
+    part.set_filename(Some(&i.name));
+    part.set_disposition(Some("inline"));
+    part.set_content_id(Some(&i.cid));
+    MimePartExt::set_encoding(&part, camel::TransferEncoding::EncodingBase64);
+    part
+}
+
+/// The sent plain text: each image token the message carries becomes
+/// "[image: name]"; tokens for images it lacks are left as written.
+fn plain_images(text: &str, used: &[Inline]) -> String {
+    let mut out = String::new();
+    let mut last = 0;
+    for t in image_tokens(text) {
+        if !used.iter().any(|u| u.cid == t.cid) {
+            continue;
+        }
+        out.push_str(&text[last..t.range.start]);
+        let name = t.name.trim();
+        out.push_str(&if name.is_empty() { "[image]".to_string() } else { format!("[image: {name}]") });
+        last = t.range.end;
+    }
+    out.push_str(&text[last..]);
+    out
 }
 
 fn attachment_part(a: &Attachment) -> MimePart {
@@ -454,21 +605,57 @@ fn quoted(depth: usize, text: &str) -> String {
 /// Renders Markdown to an HTML document. Line breaks are kept, as people
 /// expect in mail, and HTML written in the text is shown as text.
 pub fn markdown_html(text: &str) -> String {
-    use pulldown_cmark::{Event, Options, Parser};
+    markdown_html_with(text, &[])
+}
+
+/// [`markdown_html`], with image tokens for `inline` images drawn at
+/// their size and never wider than the message.
+pub fn markdown_html_with(text: &str, inline: &[Inline]) -> String {
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
     let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
-    let events = Parser::new_ext(text, options).map(|e| match e {
-        Event::SoftBreak => Event::HardBreak,
-        // Quoted mail can contain markup; it must not become live HTML.
-        Event::Html(h) | Event::InlineHtml(h) => Event::Text(h),
-        e => e,
-    });
+    let known = |dest: &str| dest.strip_prefix("cid:").filter(|c| inline.iter().any(|i| i.cid == *c)).map(str::to_string);
+    let mut events = Vec::new();
+    // The image being read: its Content-ID, size and alt text so far.
+    let mut image: Option<(String, Size, String)> = None;
+    for e in Parser::new_ext(text, options) {
+        if let Some((_, _, alt)) = image.as_mut() {
+            match e {
+                Event::End(TagEnd::Image) => {
+                    let (cid, size, alt) = image.take().expect("reading an image");
+                    events.push(Event::InlineHtml(img_tag(&cid, size, &alt).into()));
+                }
+                Event::Text(t) | Event::Code(t) => alt.push_str(&t),
+                _ => {}
+            }
+            continue;
+        }
+        match e {
+            Event::Start(Tag::Image { ref dest_url, ref title, .. }) if known(dest_url).is_some() => {
+                image = Some((known(dest_url).expect("checked"), Size::parse(title), String::new()));
+            }
+            Event::SoftBreak => events.push(Event::HardBreak),
+            // Quoted mail can contain markup; it must not become live HTML.
+            Event::Html(h) | Event::InlineHtml(h) => events.push(Event::Text(h)),
+            e => events.push(e),
+        }
+    }
     let mut body = String::new();
-    pulldown_cmark::html::push_html(&mut body, events);
+    pulldown_cmark::html::push_html(&mut body, events.into_iter());
     format!(
         "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><style>\
          blockquote{{margin:0 0 0 .8ex;border-left:2px solid #ccc;padding-left:1ex}}\
          pre{{white-space:pre-wrap}}</style></head><body>\n{body}</body></html>\n"
     )
+}
+
+fn img_tag(cid: &str, size: Size, alt: &str) -> String {
+    let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
+    let (cid, alt) = (esc(cid), esc(alt));
+    match size {
+        Size::Natural => format!(r#"<img src="cid:{cid}" alt="{alt}" style="max-width:100%;height:auto">"#),
+        Size::Width(w) => format!(r#"<img src="cid:{cid}" alt="{alt}" width="{w}" style="max-width:100%;height:auto">"#),
+        Size::Stretched(w, h) => format!(r#"<img src="cid:{cid}" alt="{alt}" width="{w}" height="{h}" style="max-width:100%">"#),
+    }
 }
 
 // Replies and forwards
@@ -842,6 +1029,18 @@ pub fn from_draft_with(msg: &MimeMessage, content: Option<&MimePart>) -> Outgoin
         None => render::reply_text(msg),
     };
     let crypto = msg.header(CRYPTO_HEADER).map(|h| h.to_string()).unwrap_or_default();
+    let root: &MimePart = content.unwrap_or(msg.upcast_ref());
+    let mut inline: Vec<Inline> = Vec::new();
+    if format == Format::Markdown {
+        for t in image_tokens(&body) {
+            if inline.iter().any(|i| i.cid == t.cid) {
+                continue;
+            }
+            if let Some((data, mime_type)) = render::inline_part_in(root, &t.cid) {
+                inline.push(Inline { cid: t.cid, name: t.name, mime_type, data: glib::Bytes::from_owned(data) });
+            }
+        }
+    }
     let in_reply_to = msg.header("In-Reply-To").and_then(|h| message_ids(&h).into_iter().next());
     Outgoing {
         from: addresses(msg.from()).into_iter().next().unwrap_or_default(),
@@ -858,7 +1057,8 @@ pub fn from_draft_with(msg: &MimeMessage, content: Option<&MimePart>) -> Outgoin
             .unwrap_or_default(),
         in_reply_to,
         references: msg.header("References").map(|r| message_ids(&r)).unwrap_or_default(),
-        attachments: render::attachments_in(content.unwrap_or(msg.upcast_ref())),
+        attachments: render::attachments_in(root),
+        inline,
         forwarded: None,
         autocrypt: None,
         sign: crypto.split(',').any(|f| f.trim() == "sign"),
@@ -906,6 +1106,30 @@ mod tests {
         assert!(html.contains("one<br />"));
         assert!(html.contains("&lt;img src=x&gt;"));
         assert!(html.contains("<blockquote>"));
+    }
+
+    #[test]
+    fn image_tokens_and_sizes() {
+        let text = "a ![cat.png](cid:1@x \"320\") b ![dog](cid:2@x \"200x100\") ![](cid:3@x) ![web](https://e.org/i.png)";
+        let t = image_tokens(text);
+        assert_eq!(t.len(), 3);
+        assert_eq!((t[0].name.as_str(), t[0].cid.as_str(), t[0].size), ("cat.png", "1@x", Size::Width(320)));
+        assert_eq!(t[1].size, Size::Stretched(200, 100));
+        assert_eq!(t[2].size, Size::Natural);
+        assert_eq!(image_token("a]b", "c@d", Size::Width(5)), "![a b](cid:c@d \"5\")");
+        assert_eq!(image_tokens(&image_token("x", "c@d", Size::Stretched(3, 4)))[0].size, Size::Stretched(3, 4));
+    }
+
+    #[test]
+    fn inline_images_in_html_and_plain() {
+        let img = Inline { cid: "1@x".into(), name: "cat.png".into(), mime_type: "image/png".into(), data: glib::Bytes::from_static(b"p") };
+        let text = "Look:\n![cat.png](cid:1@x \"320\")\n![gone](cid:9@x)";
+        let html = markdown_html_with(text, std::slice::from_ref(&img));
+        assert!(html.contains(r#"<img src="cid:1@x" alt="cat.png" width="320" style="max-width:100%;height:auto">"#), "{html}");
+        // An image the message lacks stays an ordinary Markdown image.
+        assert!(html.contains(r#"src="cid:9@x""#));
+        assert!(!html.contains(r#"alt="gone" width"#));
+        assert_eq!(plain_images(text, &[img]), "Look:\n[image: cat.png]\n![gone](cid:9@x)");
     }
 
     #[test]

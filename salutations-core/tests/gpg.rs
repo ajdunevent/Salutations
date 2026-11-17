@@ -45,7 +45,7 @@ fn sign_encrypt_round_trip() {
         ..Default::default()
     };
     let msg = out.headers(false).unwrap();
-    crypto::protect_sync(&ctx, &msg, &out.content_part(), Some(&fpr), Some(&["bob@example.org".to_string()])).unwrap();
+    crypto::protect_sync(&ctx, &msg, &out.content_part(false), Some(&fpr), Some(&["bob@example.org".to_string()])).unwrap();
     let ct = msg.content_type().unwrap().simple().unwrap();
     assert_eq!(ct.as_str(), "multipart/encrypted");
 
@@ -67,7 +67,7 @@ fn sign_encrypt_round_trip() {
     assert!(text.contains("Hello *Bob*"), "{text}");
 
     let msg = out.headers(false).unwrap();
-    crypto::protect_sync(&ctx, &msg, &out.content_part(), Some(&fpr), None).unwrap();
+    crypto::protect_sync(&ctx, &msg, &out.content_part(false), Some(&fpr), None).unwrap();
     let (_, prot) = crypto::unprotect_sync(&ctx, &msg).expect("signed");
     assert!(!prot.encrypted);
     assert!(matches!(prot.signature.unwrap().status, SignStatus::Good | SignStatus::Unknown));
