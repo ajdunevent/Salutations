@@ -70,6 +70,14 @@
   </screenshots>
 
   <releases>
+    <release version="0.2.1" date="2026-11-19">
+      <description>
+        <p>Less memory in the background.</p>
+        <ul>
+          <li>With Run in background on, closing the window frees most of the memory it used; the folder and message come back when it is shown again</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-11-16">
       <description>
         <p>Images in your messages, and rules for new mail.</p>

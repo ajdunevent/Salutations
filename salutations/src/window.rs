@@ -225,6 +225,13 @@ pub struct Window {
     outer: adw::OverlaySplitView,
     inner: adw::NavigationSplitView,
     open: RefCell<Option<OpenFolder>>,
+    /// Hidden in the background with what only the window needs let go;
+    /// see `shed`.
+    shed: Cell<bool>,
+    /// The folder, and message, to show again when the window comes back.
+    reopen: RefCell<Option<(FolderObject, Option<String>)>>,
+    /// The message to open once the reopened folder is listed.
+    reopen_uid: RefCell<Option<String>>,
     read_timer: RefCell<Option<glib::SourceId>>,
     /// The message view's header bar actions.
     viewer_buttons: ActionButtons,
@@ -762,6 +769,9 @@ impl Window {
                 outer,
                 inner,
                 open: RefCell::new(None),
+                shed: Cell::new(false),
+                reopen: RefCell::new(None),
+                reopen_uid: RefCell::new(None),
                 read_timer: RefCell::new(None),
                 viewer_buttons,
                 toasts,
@@ -2366,6 +2376,10 @@ impl Window {
     }
 
     fn open_folder(self: &Rc<Self>, obj: &FolderObject) {
+        if self.shed.get() {
+            *self.reopen.borrow_mut() = Some((obj.clone(), None));
+            return;
+        }
         // A rebuilt tree has new objects for the same folders; the open
         // folder stays open and only its row object is swapped.
         if let Some(o) = self.open.borrow_mut().as_mut()
@@ -2417,6 +2431,9 @@ impl Window {
             let archive = ctl.special.borrow().as_ref().and_then(|s| s.archive.clone());
             this.list.set_in_archive(archive.as_deref() == folder.full_name().as_deref());
             this.list.set_folder(Some(&folder), ctl.account.address.clone());
+            if let Some(uid) = this.reopen_uid.borrow_mut().take() {
+                this.list.open_uid(&uid);
+            }
             // A new folder starts unfiltered.
             if let Some(a) = this.window.lookup_action("filter").and_downcast::<gio::SimpleAction>() {
                 a.set_state(&"all".to_variant());
@@ -2437,6 +2454,62 @@ impl Window {
             let _ = folder.refresh_info_future(glib::ffi::G_PRIORITY_DEFAULT).await;
         });
         *self.opening.borrow_mut() = Some(handle);
+    }
+
+    /// Sheds and restores with the window's visibility while Salutations
+    /// runs in the background.
+    pub fn watch_background(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        self.window.connect_visible_notify(move |w| {
+            let Some(this) = weak.upgrade() else { return };
+            if w.is_visible() {
+                this.restore();
+            } else if Settings::get().run_in_background {
+                this.shed();
+            }
+        });
+    }
+
+    /// Lets go of what only the window needs while it is hidden: the open
+    /// folder and its rows, the shown message and the web view's process,
+    /// cached pictures, and the window's graphics. Inbox watching,
+    /// notifications and rules keep running.
+    pub fn shed(self: &Rc<Self>) {
+        if self.shed.replace(true) {
+            return;
+        }
+        if let Some(h) = self.opening.borrow_mut().take() {
+            h.abort();
+        }
+        let uid = self.viewer.current().map(|(_, u)| u);
+        if let Some(o) = self.open.borrow_mut().take() {
+            o.folder.disconnect(o.handler);
+            *self.reopen.borrow_mut() = Some((o.obj, uid));
+        } else if let Some(obj) = self.folders.selected() {
+            *self.reopen.borrow_mut() = Some((obj, None));
+        }
+        self.list.set_folder(None, None);
+        self.viewer.release();
+        crate::people::release_images();
+        crate::debug::log("background: shed");
+        let window = self.window.clone();
+        // After the hide has finished.
+        glib::idle_add_local_once(move || {
+            if !window.is_visible() {
+                WidgetExt::unrealize(&window);
+            }
+            trim_memory();
+        });
+    }
+
+    fn restore(self: &Rc<Self>) {
+        if !self.shed.replace(false) {
+            return;
+        }
+        crate::debug::log("background: restored");
+        let Some((obj, uid)) = self.reopen.borrow_mut().take() else { return };
+        *self.reopen_uid.borrow_mut() = uid;
+        self.open_folder(&obj);
     }
 
     fn folder_changed(&self, folder: &camel::Folder, changes: &camel::FolderChanges) {
@@ -4027,6 +4100,18 @@ fn all_folder_choices(accounts: &[Rc<AccountCtl>], exclude: Option<(&AccountCtl,
         out.extend(choices);
     }
     out
+}
+
+/// Hands memory glibc keeps after frees back to the system; without it
+/// the process stays as large as its busiest moment.
+fn trim_memory() {
+    unsafe extern "C" {
+        fn malloc_trim(pad: usize) -> std::ffi::c_int;
+    }
+    // SAFETY: malloc_trim only releases free heap pages.
+    unsafe {
+        malloc_trim(0);
+    }
 }
 
 /// The account's folders as (full name, path) pairs in tree order, the

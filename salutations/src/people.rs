@@ -472,6 +472,17 @@ thread_local! {
     static OFFLINE: Cell<bool> = const { Cell::new(false) };
 }
 
+/// Drops the pictures decoded so far; the next look-up fetches them again,
+/// from the address book or the disk cache. Fetches under way are kept.
+pub fn release_images() {
+    let idx = index();
+    idx.photos.borrow_mut().retain(|_, p| p.is_none());
+    idx.local.borrow_mut().retain(|_, s| matches!(s, Slot::Pending));
+    idx.online.borrow_mut().retain(|_, s| matches!(s, Slot::Pending));
+    idx.bimi.borrow_mut().retain(|_, s| matches!(s, Slot::Pending));
+    idx.avatars.borrow_mut().retain(|b| b.avatar.upgrade().is_some());
+}
+
 pub fn set_junk_shown(junk: bool) {
     OFFLINE.set(junk);
 }

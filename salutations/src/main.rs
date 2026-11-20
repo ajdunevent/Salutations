@@ -76,8 +76,11 @@ fn main() -> glib::ExitCode {
         let w = window::Window::new(app, registry, session);
         background::set_window(&w.window);
         background::apply();
+        w.watch_background();
         let hidden = hidden_start_a.replace(false) && salutations_core::Settings::get().run_in_background;
-        if !hidden {
+        if hidden {
+            w.shed();
+        } else {
             w.window.present();
             default_app::first_run(&w.window);
         }

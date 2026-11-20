@@ -55,6 +55,8 @@ thread_local! {
 /// context; call once.
 pub fn register_cid_scheme() {
     let ctx = webkit::WebContext::default().expect("default web context");
+    // The least memory caching: one page at a time, never revisited.
+    ctx.set_cache_model(webkit::CacheModel::DocumentViewer);
     // Fonts load with CORS checks, which a custom scheme fails otherwise.
     if let Some(sec) = ctx.security_manager() {
         sec.register_uri_scheme_as_cors_enabled(remote::SCHEME);
@@ -789,6 +791,14 @@ impl Viewer {
             page.set_title(&title);
         }
         self.widget.set_visible_child_name("selected");
+    }
+
+    /// Clears the view and ends the web view's web process, which keeps
+    /// its memory otherwise; the next message starts a new one.
+    pub fn release(&self) {
+        self.clear();
+        *self.painted.borrow_mut() = None;
+        self.web.terminate_web_process();
     }
 
     pub fn clear(&self) {
