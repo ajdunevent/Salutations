@@ -4,7 +4,6 @@
 
 use salutations_core::compose::Outgoing;
 use salutations_core::outbox::{self, Waiting};
-use salutations_core::send;
 
 use super::*;
 
@@ -40,70 +39,6 @@ impl Window {
             this.toast("Not sent. It is in Drafts and will be sent when the server can be reached.", false);
             this.update_outbox_notes();
         });
-    }
-
-    /// Sends the account's waiting messages, one at a time.
-    pub(super) fn retry_waiting(self: &Rc<Self>, ctl: &Rc<AccountCtl>) {
-        let waiting: Vec<Waiting> = outbox::load().into_iter().filter(|w| w.account == ctl.account.uid).collect();
-        if waiting.is_empty() || ctl.sending.replace(true) {
-            return;
-        }
-        let (this, ctl) = (self.clone(), ctl.clone());
-        glib::spawn_future_local(async move {
-            for w in waiting {
-                this.send_waiting(&ctl, &w).await;
-            }
-            ctl.sending.set(false);
-            this.update_outbox_notes();
-        });
-    }
-
-    async fn send_waiting(self: &Rc<Self>, ctl: &Rc<AccountCtl>, w: &Waiting) {
-        let drafts = ctl.special.borrow().as_ref().and_then(|s| s.drafts.clone());
-        let store = ctl.store.borrow().clone();
-        let (Some(drafts), Some(store)) = (drafts, store) else { return };
-        let Ok(folder) = self.session.folder_future(&store, &drafts).await else { return };
-        *ctl.sending_uid.borrow_mut() = Some(w.uid.clone());
-        self.update_outbox_notes();
-        let msg = match folder.message_future(&w.uid, glib::ffi::G_PRIORITY_DEFAULT).await {
-            Ok(Some(m)) => m,
-            // Deleted or sent from elsewhere: no longer waiting.
-            Ok(None) => {
-                forget(&w.message_id);
-                ctl.sending_uid.borrow_mut().take();
-                return;
-            }
-            Err(e) => {
-                if e.matches(camel::FolderError::InvalidUid) {
-                    forget(&w.message_id);
-                }
-                ctl.sending_uid.borrow_mut().take();
-                return;
-            }
-        };
-        // Rebuilt from the draft, so it is signed and encrypted as it was
-        // composed rather than as saved (drafts are never signed).
-        let body = self.decrypt(&msg).await;
-        let out = salutations_core::compose::from_draft_with(&msg, body.as_ref());
-        let keys = self.account_keys(ctl);
-        let result = send::send(&self.session, &ctl.account, &out, keys).await;
-        ctl.sending_uid.borrow_mut().take();
-        match result {
-            Ok(sent) => {
-                forget(&w.message_id);
-                self.file_sent(ctl, &sent).await;
-                let t = Target { account: ctl.clone(), folder, uids: vec![w.uid.clone()], thread: false };
-                self.delete_permanently(&t).await;
-                self.toast("Message sent", false);
-            }
-            Err(e) => {
-                let mut list = outbox::load();
-                if let Some(x) = list.iter_mut().find(|x| x.message_id == w.message_id) {
-                    x.error = salutations_core::send::describe_failure(&e);
-                }
-                outbox::save(&list);
-            }
-        }
     }
 
     /// Marks waiting drafts in the open Drafts folder's list.

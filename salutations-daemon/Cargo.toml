@@ -1,0 +1,25 @@
+[package]
+name = "salutations-daemon"
+version = "0.3.0"
+description = "Salutations' background process: syncing, notifications and rules without GTK"
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "salutations"
+path = "src/main.rs"
+
+[dependencies]
+salutations-core = { path = "../salutations-core" }
+cairo-rs = { version = "0.22", features = ["png"] }
+futures-channel = "0.3"
+gio = { version = "0.22", features = ["v2_70"] }
+glib = "0.22"
+
+[dev-dependencies]
+jpeg-encoder = "0.7"
+
+[build-dependencies]
+pkg-config = "0.3"

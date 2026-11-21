@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use salutations_core::camel::{self, prelude::*};
+use crate::mail::camel;
 
 use crate::message_list::{hit_row, row_widget, set_unread_class};
 use crate::message_object::MessageObject;

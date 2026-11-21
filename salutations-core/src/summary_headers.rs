@@ -15,7 +15,7 @@ const SCHEMA: &str = "org.gnome.evolution-data-server";
 const KEY: &str = "camel-message-info-user-headers";
 /// CAMEL_UTILS_MAX_USER_HEADERS.
 const MAX: usize = 3;
-const WANTED: [&str; 3] = ["Importance", "X-Priority", "Authentication-Results"];
+pub const WANTED: [&str; 3] = ["Importance", "X-Priority", "Authentication-Results"];
 
 /// The header name in an entry, which may be "Display Name|Header".
 fn header_of(entry: &str) -> &str {

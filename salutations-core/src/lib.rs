@@ -9,7 +9,10 @@ pub mod compose;
 pub mod avatars;
 pub mod contacts;
 pub mod crypto;
+pub mod debug;
 pub mod downsync;
+pub mod engine;
+pub mod ipc;
 pub mod links;
 pub mod mailto;
 pub mod offline;
@@ -24,7 +27,7 @@ pub mod xface;
 pub mod render;
 pub mod rules;
 mod session;
-mod settings;
+pub mod settings;
 pub mod verify;
 
 use std::path::PathBuf;
@@ -48,6 +51,13 @@ pub fn data_dir() -> PathBuf {
 /// Cached message bodies.
 pub fn cache_dir() -> PathBuf {
     glib::user_cache_dir().join("salutations")
+}
+
+/// Initializes Camel for the window process, which only parses messages
+/// and runs OpenPGP; the background process owns the stores and the
+/// certificate database.
+pub fn init_window() -> Result<(), glib::Error> {
+    camel::init(&data_dir(), false).map_err(|e| glib::Error::new(gio::IOErrorEnum::Failed, &e.to_string()))
 }
 
 /// Initializes Camel and loads its providers. Must run once, on the main

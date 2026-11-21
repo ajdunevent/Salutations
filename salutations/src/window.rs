@@ -7,16 +7,17 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use salutations_core::camel::{self, prelude::*};
+use crate::mail::camel::{self, prelude::*};
 use salutations_core::edataserver::SourceRegistry;
-use salutations_core::offline;
-use salutations_core::rules;
-use salutations_core::{Account, Session, Settings, SpecialFolders};
+use crate::remote::{AccountState, Engine};
+use salutations_core::engine::{self, STEP_LIMIT, within};
+use salutations_core::{Account, Settings, SpecialFolders};
+use crate::mail::camel::Session;
 
 use crate::folder_object::{FolderObject, SyncState};
 use crate::folder_pane::{DraggedMessages, FolderPane};
 use crate::manage::{self, FolderChoice};
-use crate::notify::{self, Notifier};
+use crate::remote::{self, Request};
 use crate::search::{self, Search};
 use crate::message_list::MessageList;
 use crate::composer::Composer;
@@ -33,79 +34,12 @@ mod rule_runner;
 const SEEN: u32 = camel::MessageFlags::SEEN.bits();
 const FLAGGED: u32 = camel::MessageFlags::FLAGGED.bits();
 const DELETED: u32 = camel::MessageFlags::DELETED.bits();
-/// Network changes come in bursts; accounts are synced at most this often
-/// because of them.
-const NETWORK_RESYNC_SECONDS: u64 = 30;
-/// Connecting and listing folders take at most this long; a connection
-/// left dead by sleep or a network change otherwise hangs a sync for
-/// minutes, and every later sync waits on it.
-const STEP_LIMIT: std::time::Duration = std::time::Duration::from_secs(45);
-/// Seconds before retrying a failed sync, by failures in a row; the last
-/// repeats.
-const RETRY_SECONDS: [u32; 4] = [30, 60, 120, 300];
-/// Minutes between push connection checks, off and on metered connections.
-const KEEPALIVE_MINUTES: u32 = 15;
-const KEEPALIVE_METERED_MINUTES: u32 = 30;
 
 struct AccountCtl {
     account: Account,
+    eng: Rc<AccountState>,
     obj: FolderObject,
-    store: RefCell<Option<camel::Store>>,
-    /// Ends the running sync; see `resync`.
-    abort: RefCell<Option<futures_channel::oneshot::Sender<()>>>,
-    /// A sync was asked for while one ran; it starts when that one ends.
-    again: Cell<bool>,
-    /// Failed syncs in a row, for the retry delay.
-    failures: Cell<u32>,
-    /// The retry after a failed sync.
-    retry: RefCell<Option<glib::SourceId>>,
-    /// The store's connection is watched for drops.
-    watching: Cell<bool>,
-    /// When the running sync started.
-    sync_started: Cell<Option<std::time::Instant>>,
-    /// INBOX's last unread count, kept for the badge while the folder is
-    /// unavailable.
-    unread: Cell<Option<i64>>,
-    /// Saved by the last session, then checked against the server once
-    /// per session.
-    special: RefCell<Option<SpecialFolders>>,
-    special_checked: Cell<bool>,
-    /// The last sync failed to sign in, so the error popover offers Online
-    /// Accounts.
-    sign_in_failed: Cell<bool>,
-    /// The check-interval timer.
-    timer: RefCell<Option<glib::SourceId>>,
-    /// Paused for Power Saver, as last applied.
-    paused: Cell<bool>,
-    /// With push on: the periodic check that notices a dead push
-    /// connection; see `schedule_keepalive`.
-    keepalive: RefCell<Option<glib::SourceId>>,
-    /// Folders kept offline as of the last maintenance run, to find the
-    /// ones switched off since. Empty until the first run.
-    synced: RefCell<HashSet<String>>,
-    /// The window's edge at the last maintenance run; later runs prune
-    /// only messages that crossed it since. None means check everything.
-    last_cutoff: Cell<Option<i64>>,
-    /// A maintenance run is under way; another request waits for it.
-    maintaining: Cell<bool>,
-    /// Requested while a run was under way: Some(full).
-    maintain_again: Cell<Option<bool>>,
-    last_sync: Cell<Option<std::time::Instant>>,
-    /// INBOX, watched for new mail while Salutations runs.
-    inbox: RefCell<Option<(camel::Folder, glib::SignalHandlerId)>>,
-    /// Messages with a notification of their own, oldest first.
-    noted: RefCell<Vec<String>>,
-    /// Messages counted in the combined notification.
-    combined: RefCell<Vec<String>>,
-    /// The highest INBOX UID considered for notifying; saved between runs.
-    last_uid: Cell<Option<u64>>,
-    /// Messages Salutations itself is moving into INBOX, which must not
-    /// notify.
-    expected: RefCell<Vec<MessageKey>>,
-    /// Waiting messages are being sent; another retry waits for the next
-    /// sync.
-    sending: Cell<bool>,
-    /// The waiting draft being sent right now.
+    /// The waiting draft the background process is sending.
     sending_uid: RefCell<Option<String>>,
 }
 
@@ -117,6 +51,15 @@ struct Target {
     uids: Vec<String>,
     /// From a thread's summary row: all of its messages.
     thread: bool,
+}
+
+/// A notification's button, passed on by the background process.
+enum NoteAction {
+    Open { account: String, uid: String },
+    Delete { account: String, uid: String },
+    Junk { account: String, uid: String },
+    Reply { account: String, uid: String },
+    OpenInbox { account: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -210,13 +153,14 @@ struct OpenFolder {
     account: Rc<AccountCtl>,
     obj: FolderObject,
     folder: camel::Folder,
-    handler: glib::SignalHandlerId,
+    handler: remote::HandlerId,
 }
 
 pub struct Window {
     pub window: adw::ApplicationWindow,
     registry: SourceRegistry,
     session: Session,
+    engine: Rc<Engine>,
     accounts: RefCell<Vec<Rc<AccountCtl>>>,
     folders: Rc<FolderPane>,
     list: Rc<MessageList>,
@@ -225,13 +169,6 @@ pub struct Window {
     outer: adw::OverlaySplitView,
     inner: adw::NavigationSplitView,
     open: RefCell<Option<OpenFolder>>,
-    /// Hidden in the background with what only the window needs let go;
-    /// see `shed`.
-    shed: Cell<bool>,
-    /// The folder, and message, to show again when the window comes back.
-    reopen: RefCell<Option<(FolderObject, Option<String>)>>,
-    /// The message to open once the reopened folder is listed.
-    reopen_uid: RefCell<Option<String>>,
     read_timer: RefCell<Option<glib::SourceId>>,
     /// The message view's header bar actions.
     viewer_buttons: ActionButtons,
@@ -241,7 +178,6 @@ pub struct Window {
     /// The toast of the last batch while it is shown.
     toast: RefCell<Option<adw::Toast>>,
     search: Rc<Search>,
-    notifier: Rc<Notifier>,
     /// The search button's icon or spinner.
     search_icons: gtk::Stack,
     /// The folder's list or the search results.
@@ -269,10 +205,6 @@ pub struct Window {
     /// "Empty Trash" or "Empty Junk" over those folders while they hold
     /// messages.
     empty_banner: adw::Banner,
-    /// Kept so its notifications keep coming.
-    power_monitor: RefCell<Option<gio::PowerProfileMonitor>>,
-    /// logind's wake signal, kept for the window's lifetime.
-    sleep_watch: RefCell<Option<gio::SignalSubscription>>,
     /// The folder being opened, so startup can wait for INBOX.
     opening: RefCell<Option<glib::JoinHandle<()>>>,
     composer: Rc<Composer>,
@@ -314,7 +246,7 @@ pub struct Window {
 }
 
 impl Window {
-    pub fn new(app: &adw::Application, registry: SourceRegistry, session: Session) -> Rc<Self> {
+    pub fn new(app: &adw::Application, registry: SourceRegistry) -> Rc<Self> {
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .title("Salutations")
@@ -369,7 +301,7 @@ impl Window {
             );
             let list = MessageList::new();
             let viewer = Viewer::new();
-            let gpg = salutations_core::crypto::context(&session);
+            let gpg = salutations_core::crypto::context_with(None);
             viewer.set_gpg(gpg.clone());
             let title = adw::WindowTitle::new("", "");
 
@@ -759,8 +691,9 @@ impl Window {
 
             Window {
                 window,
+                engine: Engine::new(registry.clone()),
                 registry,
-                session,
+                session: Session,
                 accounts: RefCell::new(Vec::new()),
                 folders,
                 list,
@@ -769,16 +702,12 @@ impl Window {
                 outer,
                 inner,
                 open: RefCell::new(None),
-                shed: Cell::new(false),
-                reopen: RefCell::new(None),
-                reopen_uid: RefCell::new(None),
                 read_timer: RefCell::new(None),
                 viewer_buttons,
                 toasts,
                 undo: RefCell::new(Vec::new()),
                 toast: RefCell::new(None),
                 search,
-                notifier: Notifier::new(),
                 search_icons,
                 list_stack,
                 search_cancel: RefCell::new(None),
@@ -793,8 +722,6 @@ impl Window {
                 pause_banner,
                 empty_banner,
                 pull,
-                power_monitor: RefCell::new(None),
-                sleep_watch: RefCell::new(None),
                 composer,
                 content_stack,
                 compose: RefCell::new(None),
@@ -826,40 +753,21 @@ impl Window {
         this.connect_close_saving();
         this.apply_order();
         this.connect_parts();
-        this.load_accounts();
-        // The registry emits on the main context it was created on.
-        let weak = glib::thread_guard::ThreadGuard::new(Rc::downgrade(&this));
-        salutations_core::watch_mail_accounts(&this.registry, move |_| {
-            if let Some(this) = weak.get_ref().upgrade() {
-                this.load_accounts();
-            }
-        });
-        this.watch_network_and_sleep();
-        this.watch_power_and_metering();
-        // Hidden while running in background: drop the shown page, so
-        // WebKit's web process holds no message.
+        this.connect_engine();
+        this.engine.start();
         let weak = Rc::downgrade(&this);
-        this.window.connect_hide(move |_| {
+        this.engine.connect_request(move |r| {
             if let Some(this) = weak.upgrade() {
-                this.close_composer();
-                this.cancel_read_timer();
-                this.list.unselect();
-                this.viewer.clear();
-                this.update_viewer_read();
+                this.request_from_background(r);
             }
         });
         let weak = Rc::downgrade(&this);
-        this.notifier.connect_action(move |action| {
+        this.window.connect_is_active_notify(move |_| {
             if let Some(this) = weak.upgrade() {
-                this.notification_action(action);
+                this.report_shown();
             }
         });
         this
-    }
-
-    /// Before the process ends.
-    pub fn shutdown(&self) {
-        self.notifier.withdraw_all();
     }
 
     fn connect_parts(self: &Rc<Self>) {
@@ -1146,7 +1054,7 @@ impl Window {
             let Some(this) = weak.upgrade() else { return };
             let ctl = this.open.borrow().as_ref().map(|o| o.account.clone());
             if let Some(ctl) = ctl.or_else(|| this.accounts.borrow().first().cloned()) {
-                this.sync(ctl);
+                this.engine.sync(&ctl.eng);
             }
         });
         win.add_action(&sync);
@@ -1329,7 +1237,7 @@ impl Window {
             .iter()
             .map(|ctl| crate::preferences::AccountEntry {
                 account: ctl.account.clone(),
-                store: ctl.store.borrow().clone(),
+                store: ctl.eng.store(),
                 folders: folder_paths(ctl),
             })
             .collect();
@@ -1339,24 +1247,11 @@ impl Window {
             let ctl = this.accounts.borrow().iter().find(|c| c.account.uid == uid).cloned();
             let Some(ctl) = ctl else { return };
             match change {
-                crate::preferences::AccountChange::Offline => {
-                    this.apply_conditions(&ctl);
-                    this.maintain(&ctl, true, None);
-                }
-                crate::preferences::AccountChange::Refresh => this.schedule_refresh(&ctl),
-                crate::preferences::AccountChange::Order => this.load_accounts(),
-                // A paused account takes the setting when the pause ends.
-                crate::preferences::AccountChange::Push => {
-                    this.schedule_keepalive(&ctl);
-                    if !this.paused(&ctl) {
-                        this.reconnect(&ctl);
-                    }
-                }
-                crate::preferences::AccountChange::Sync => {
-                    this.schedule_refresh(&ctl);
-                    this.apply_conditions(&ctl);
-                    this.maintain(&ctl, true, None);
-                }
+                crate::preferences::AccountChange::Offline => this.engine.account_changed(&ctl.eng, "offline"),
+                crate::preferences::AccountChange::Refresh => this.engine.account_changed(&ctl.eng, "refresh"),
+                crate::preferences::AccountChange::Order => this.engine.load_accounts(),
+                crate::preferences::AccountChange::Push => this.engine.account_changed(&ctl.eng, "push"),
+                crate::preferences::AccountChange::Sync => this.engine.account_changed(&ctl.eng, "sync"),
             }
         });
         let weak = Rc::downgrade(self);
@@ -1367,251 +1262,9 @@ impl Window {
         crate::preferences::show(&self.window, &self.registry, entries, on_offline, apply_rule, open_account);
     }
 
-    /// Brings the account's offline copies in line with its settings, in
-    /// the background: refreshes and downloads the folders kept offline,
-    /// deletes bodies that fell out of the window, and deletes all bodies of
-    /// folders no longer kept. `full` (after a settings change) checks every
-    /// message against the window instead of only those that crossed its
-    /// edge since the last run.
-    /// `refreshed` names a folder the caller has just refreshed, which the
-    /// run does not refresh again.
-    fn maintain(self: &Rc<Self>, ctl: &Rc<AccountCtl>, full: bool, refreshed: Option<String>) {
-        let Some(store) = ctl.store.borrow().clone() else { return };
-        if store.connection_status() != camel::ServiceConnectionStatus::Connected || self.paused(ctl) {
-            return;
-        }
-        if ctl.maintaining.replace(true) {
-            // The rerun refreshes everything, the skipped folder included.
-            let again = ctl.maintain_again.get().unwrap_or(false) || full;
-            ctl.maintain_again.set(Some(again));
-            return;
-        }
-        let settings = offline::read(&self.registry, &ctl.account).unwrap_or(offline::DEFAULT);
-        let prefs = Settings::get().sync_for(&ctl.account.uid);
-        let metered = metered();
-        let now = glib::DateTime::now_utc().ok();
-        let expression = self.download_plan(ctl, &prefs, settings.window);
-        // Only the window itself deletes, and not on metered connections,
-        // where a narrower window only limits downloading.
-        let cutoff = if metered || prefs.never_download {
-            None
-        } else {
-            now.as_ref().and_then(|now| settings.window.cutoff(now))
-        };
-        let since = if full { None } else { ctl.last_cutoff.get() };
-        let previous = ctl.synced.borrow().clone();
-        let (this, ctl) = (self.clone(), ctl.clone());
-        glib::spawn_future_local(async move {
-            let s = store.clone();
-            let result = gio::spawn_blocking(move || {
-                let Some(o) = s.dynamic_cast_ref::<camel::OfflineStore>() else { return (HashSet::new(), 0, 0) };
-                let folders = o.dup_downsync_folders();
-                let names: HashSet<String> =
-                    folders.iter().filter_map(|f| f.full_name().map(|n| n.to_string())).collect();
-                let mut pruned = 0;
-                for f in &folders {
-                    // Camel downloads only messages its summary knows, so
-                    // the folder is refreshed first.
-                    if let Some(of) = f.dynamic_cast_ref::<camel::OfflineFolder>()
-                        && let Some(expression) = &expression
-                    {
-                        let fresh = refreshed.is_some() && f.full_name().as_deref() == refreshed.as_deref();
-                        let refresh = if fresh { Ok(()) } else { f.refresh_info_sync(None::<&gio::Cancellable>) };
-                        let _ = refresh.and_then(|()| of.downsync_sync(expression.as_deref(), None::<&gio::Cancellable>));
-                    }
-                    if let Some(c) = cutoff {
-                        pruned += offline::prune(f, c, since);
-                    }
-                }
-                let mut cleared = 0;
-                for name in previous.difference(&names) {
-                    if let Ok(Some(f)) = s.folder_sync(name, camel::StoreGetFolderFlags::empty(), None::<&gio::Cancellable>) {
-                        offline::clear_folder(&f);
-                        cleared += 1;
-                    }
-                }
-                (names, pruned, cleared)
-            })
-            .await;
-            ctl.maintaining.set(false);
-            if let Ok((names, pruned, cleared)) = result {
-                crate::debug::log(&format!(
-                    "{}: offline maintenance: {} folders kept, {pruned} bodies pruned, {cleared} folders cleared",
-                    ctl.account.uid,
-                    names.len()
-                ));
-                *ctl.synced.borrow_mut() = names;
-                // Unpruned runs leave the edge where the last pruning put it.
-                if cutoff.is_some() {
-                    ctl.last_cutoff.set(cutoff);
-                }
-            }
-            if let Some(full) = ctl.maintain_again.take() {
-                this.maintain(&ctl, full, None);
-            }
-        });
-    }
-
-    /// First sync of the session: applies the defaults to an account
-    /// Salutations has not configured, then starts the check timer.
-    async fn first_sync_setup(&self, ctl: &Rc<AccountCtl>, store: &camel::Store) {
-        let uid = &ctl.account.uid;
-        if !offline::configured(uid, "offline") {
-            let written = offline::write(&self.registry, &ctl.account, &offline::DEFAULT);
-            if let Ok(inbox) = self.session.folder_future(store, "INBOX").await {
-                offline::set_folder_synced(&inbox, true);
-            }
-            match written {
-                Ok(()) => offline::mark_configured(uid, "offline"),
-                Err(e) => glib::g_warning!("salutations", "Cannot save offline settings: {}", e),
-            }
-        }
-        if !offline::configured(uid, "refresh") {
-            match offline::write_refresh(&self.registry, &ctl.account, offline::DEFAULT_REFRESH) {
-                Ok(()) => offline::mark_configured(uid, "refresh"),
-                Err(e) => glib::g_warning!("salutations", "Cannot save the check interval: {}", e),
-            }
-        }
-    }
-
-    /// (Re)starts the account's check timer from its setting.
-    fn schedule_refresh(self: &Rc<Self>, ctl: &Rc<AccountCtl>) {
-        if let Some(id) = ctl.timer.borrow_mut().take() {
-            id.remove();
-        }
-        self.schedule_keepalive(ctl);
-        if self.paused(ctl) {
-            return;
-        }
-        let offline::Refresh::Minutes(m) = self.refresh_now(ctl) else { return };
-        let (weak, ctl_weak) = (Rc::downgrade(self), Rc::downgrade(ctl));
-        let id = glib::timeout_add_seconds_local(m.saturating_mul(60), move || {
-            let (Some(this), Some(ctl)) = (weak.upgrade(), ctl_weak.upgrade()) else {
-                return glib::ControlFlow::Break;
-            };
-            this.sync(ctl);
-            glib::ControlFlow::Continue
-        });
-        *ctl.timer.borrow_mut() = Some(id);
-    }
-
-    /// Whether the account does nothing automatic now: Power Saver is on and
-    /// the account pauses for it.
-    fn paused(&self, ctl: &AccountCtl) -> bool {
-        power_saver() && Settings::get().sync_for(&ctl.account.uid).pause_power_save
-    }
-
-    /// The check interval for the connection in use.
-    fn refresh_now(&self, ctl: &AccountCtl) -> offline::Refresh {
-        let normal = offline::read_refresh(&self.registry, &ctl.account).unwrap_or(offline::DEFAULT_REFRESH);
-        let metered_refresh = Settings::get().sync_for(&ctl.account.uid).metered_refresh;
-        match metered_refresh {
-            Some(r) if metered() => r,
-            _ => normal,
-        }
-    }
-
-    /// "Download From" for the connection in use.
-    fn download_now(&self, ctl: &AccountCtl, prefs: &salutations_core::SyncPrefs) -> offline::Download {
-        let normal = if prefs.never_download {
-            offline::Download::Never
-        } else {
-            offline::Download::Within(offline::read(&self.registry, &ctl.account).unwrap_or(offline::DEFAULT).window)
-        };
-        // A metered window never reaches past the normal one.
-        match (prefs.metered_download, glib::DateTime::now_utc()) {
-            (Some(d), Ok(now)) if metered() => d.min(normal, &now),
-            _ => normal,
-        }
-    }
-
-    /// Applies Power Saver and the connection to the account: holds push
-    /// and Camel's downloads while it is paused, and Camel's downloads
-    /// while it downloads nothing. Leaving the pause syncs once.
-    fn apply_conditions(self: &Rc<Self>, ctl: &Rc<AccountCtl>) {
-        let paused = self.paused(ctl);
-        let was = ctl.paused.replace(paused);
-        self.apply_holds(ctl);
-        if paused && !was {
-            crate::debug::log(&format!("{}: paused for Power Saver", ctl.account.uid));
-            if let Some(id) = ctl.retry.borrow_mut().take() {
-                id.remove();
-            }
-            if let Some(id) = ctl.timer.borrow_mut().take() {
-                id.remove();
-            }
-            if let Some(id) = ctl.keepalive.borrow_mut().take() {
-                id.remove();
-            }
-            if let Some(tx) = ctl.abort.borrow_mut().take() {
-                let _ = tx.send(());
-            }
-            // Closing the connection ends push.
-            if let Some(store) = ctl.store.borrow().clone() {
-                glib::spawn_future_local(async move {
-                    let _ = glib::future_with_timeout(
-                        std::time::Duration::from_secs(5),
-                        store.disconnect_future(true, glib::ffi::G_PRIORITY_DEFAULT),
-                    )
-                    .await;
-                });
-            }
-        } else if was && !paused {
-            crate::debug::log(&format!("{}: resumed after Power Saver", ctl.account.uid));
-            self.schedule_refresh(ctl);
-            self.resync(ctl, true);
-        }
-        self.update_pause_banner();
-    }
-
-    /// What maintenance downloads: None for nothing, Some(None) for Camel's
-    /// window, Some(expression) for a narrower downsync expression.
-    fn download_plan(&self, ctl: &AccountCtl, prefs: &salutations_core::SyncPrefs, window: offline::Window) -> Option<Option<String>> {
-        match self.download_now(ctl, prefs) {
-            offline::Download::Never => None,
-            offline::Download::Within(w) => {
-                let now = glib::DateTime::now_utc().ok()?;
-                Some(w.cutoff(&now).and_then(|c| offline::narrower(window, c, &now)))
-            }
-        }
-    }
-
-    /// Camel downloads by the account's window, so its downloads are held
-    /// whenever another applies; Salutations downloads instead.
-    fn camel_downloads_held(&self, ctl: &AccountCtl, prefs: &salutations_core::SyncPrefs) -> bool {
-        self.paused(ctl)
-            || self.download_now(ctl, prefs) == offline::Download::Never
-            || (metered() && prefs.metered_download.is_some())
-    }
-
-    fn apply_holds(&self, ctl: &AccountCtl) {
-        let paused = self.paused(ctl);
-        offline::hold_push(&self.registry, &ctl.account, paused);
-        let prefs = Settings::get().sync_for(&ctl.account.uid);
-        let hold = self.camel_downloads_held(ctl, &prefs);
-        if let Some(store) = ctl.store.borrow().as_ref() {
-            salutations_core::downsync::hold(store, hold);
-        }
-    }
-
-    /// New INBOX messages, downloaded by the metered window while Camel's
-    /// downloads are held for it. Other folders wait for the next sync.
-    fn download_arrivals(&self, ctl: &AccountCtl, folder: &camel::Folder) {
-        let prefs = Settings::get().sync_for(&ctl.account.uid);
-        if self.paused(ctl) || !self.camel_downloads_held(ctl, &prefs) {
-            return;
-        }
-        let window = offline::read(&self.registry, &ctl.account).unwrap_or(offline::DEFAULT).window;
-        let Some(expression) = self.download_plan(ctl, &prefs, window) else { return };
-        let Some(of) = folder.dynamic_cast_ref::<camel::OfflineFolder>().cloned() else { return };
-        gio::spawn_blocking(move || {
-            let _ = of.downsync_sync(expression.as_deref(), None::<&gio::Cancellable>);
-        });
-    }
-
     /// Trash or Junk, for the account's folder `full_name`.
     fn emptiable(ctl: &AccountCtl, full_name: &str) -> Option<&'static str> {
-        let special = ctl.special.borrow();
+        let special = ctl.eng.special();
         let s = special.as_ref()?;
         if s.trash.as_deref() == Some(full_name) {
             Some("Trash")
@@ -1667,7 +1320,7 @@ impl Window {
         let Some(name) = Self::emptiable(ctl, full_name) else { return };
         let (this, ctl, full_name) = (self.clone(), ctl.clone(), full_name.to_string());
         glib::spawn_future_local(async move {
-            let Ok(store) = this.store_for(&ctl) else { return };
+            let Ok(store) = this.engine.store_for(&ctl.eng) else { return };
             let folder = match this.session.folder_future(&store, &full_name).await {
                 Ok(f) => f,
                 Err(e) => return this.toast(&format!("Cannot open {name}: {}", e.message()), false),
@@ -1711,127 +1364,8 @@ impl Window {
     }
 
     fn update_pause_banner(&self) {
-        let paused = self.open.borrow().as_ref().is_some_and(|o| self.paused(&o.account));
+        let paused = self.open.borrow().as_ref().is_some_and(|o| self.engine.paused(&o.account.eng));
         self.pause_banner.set_revealed(paused);
-    }
-
-    /// Power Saver and metered connections change how each account syncs.
-    fn watch_power_and_metering(self: &Rc<Self>) {
-        let weak = Rc::downgrade(self);
-        let power = gio::PowerProfileMonitor::get_default();
-        power.connect_power_saver_enabled_notify(move |_| {
-            let Some(this) = weak.upgrade() else { return };
-            let accounts = this.accounts.borrow().clone();
-            for ctl in &accounts {
-                this.apply_conditions(ctl);
-            }
-        });
-        *self.power_monitor.borrow_mut() = Some(power);
-        let weak = Rc::downgrade(self);
-        gio::NetworkMonitor::default().connect_network_metered_notify(move |monitor| {
-            let Some(this) = weak.upgrade() else { return };
-            crate::debug::log(&format!("network metered: {}", monitor.is_network_metered()));
-            let accounts = this.accounts.borrow().clone();
-            for ctl in &accounts {
-                this.schedule_refresh(ctl);
-                this.apply_conditions(ctl);
-                // Off a metered connection, the account's window downloads and
-                // deletes again.
-                if !monitor.is_network_metered() {
-                    this.maintain(ctl, false, None);
-                }
-            }
-        });
-    }
-
-    /// Camel does not notice a push connection that went silent (a dropped
-    /// route, a NAT that forgot it), and no mail arrives until the next
-    /// check. While push is on, INBOX is checked every so often, which
-    /// fails on a dead connection and so reconnects; a sync in the
-    /// meantime counts as the check.
-    fn schedule_keepalive(self: &Rc<Self>, ctl: &Rc<AccountCtl>) {
-        if let Some(id) = ctl.keepalive.borrow_mut().take() {
-            id.remove();
-        }
-        if self.paused(ctl) || !offline::read_push(&self.registry, &ctl.account) {
-            return;
-        }
-        let minutes = if metered() { KEEPALIVE_METERED_MINUTES } else { KEEPALIVE_MINUTES };
-        let (weak, c) = (Rc::downgrade(self), Rc::downgrade(ctl));
-        let id = glib::timeout_add_seconds_local(minutes * 60, move || {
-            let (Some(this), Some(ctl)) = (weak.upgrade(), c.upgrade()) else {
-                return glib::ControlFlow::Break;
-            };
-            let recent = ctl.last_sync.get().is_some_and(|t| t.elapsed().as_secs() < u64::from(minutes) * 60 - 5);
-            let inbox = ctl.inbox.borrow().as_ref().map(|(f, _)| f.clone());
-            if !recent
-                && ctl.obj.sync_state() == SyncState::Idle
-                && let Some(inbox) = inbox
-            {
-                glib::spawn_future_local(async move {
-                    let check = within(STEP_LIMIT, inbox.refresh_info_future(glib::ffi::G_PRIORITY_DEFAULT)).await;
-                    if let Err(e) = check {
-                        crate::debug::log(&format!("{}: push check failed: {}", ctl.account.uid, e.message()));
-                        this.resync(&ctl, true);
-                    }
-                });
-            }
-            glib::ControlFlow::Continue
-        });
-        *ctl.keepalive.borrow_mut() = Some(id);
-    }
-
-    /// Push stops when the connection drops, so every account is synced when
-    /// the network returns and after the computer wakes, without waiting for
-    /// its timer.
-    fn watch_network_and_sleep(self: &Rc<Self>) {
-        let weak = Rc::downgrade(self);
-        gio::NetworkMonitor::default().connect_network_changed(move |_, available| {
-            let Some(this) = weak.upgrade().filter(|_| available) else { return };
-            let accounts = this.accounts.borrow().clone();
-            for ctl in accounts.into_iter().filter(|c| !this.paused(c)) {
-                let recent = |t: Option<std::time::Instant>| t.is_some_and(|t| t.elapsed().as_secs() < NETWORK_RESYNC_SECONDS);
-                // A sync that just started (at launch, say) already uses the
-                // network as it is now.
-                let starting = ctl.obj.sync_state() == SyncState::Syncing && recent(ctl.sync_started.get());
-                // Before the first sync (the monitor reports at launch too),
-                // the sync on its way covers it.
-                let first = ctl.last_sync.get().is_none() && !matches!(ctl.obj.sync_state(), SyncState::Offline | SyncState::Error);
-                if !recent(ctl.last_sync.get()) && !starting && !first {
-                    this.resync(&ctl, true);
-                }
-            }
-        });
-        // logind's PrepareForSleep(false) is sent on waking. A Flatpak needs
-        // --system-talk-name=org.freedesktop.login1 for it.
-        let weak = Rc::downgrade(self);
-        glib::spawn_future_local(async move {
-            let Ok(bus) = gio::bus_get_future(gio::BusType::System).await else { return };
-            let watch_weak = weak.clone();
-            let sub = bus.subscribe_to_signal(
-                Some("org.freedesktop.login1"),
-                Some("org.freedesktop.login1.Manager"),
-                Some("PrepareForSleep"),
-                Some("/org/freedesktop/login1"),
-                None,
-                gio::DBusSignalFlags::NONE,
-                move |signal| {
-                    let sleeping = signal.parameters.get::<(bool,)>().is_some_and(|(s,)| s);
-                    if sleeping {
-                        return;
-                    }
-                    if let Some(this) = watch_weak.upgrade() {
-                        let accounts = this.accounts.borrow().clone();
-                        for ctl in accounts.into_iter().filter(|c| !this.paused(c)) {
-                            this.resync(&ctl, true);
-                        }
-                    }
-                },
-            );
-            if let Some(this) = weak.upgrade() {
-                *this.sleep_watch.borrow_mut() = Some(sub);
-            }
-        });
     }
 
     fn apply_select_mode(&self, on: bool) {
@@ -1904,7 +1438,7 @@ impl Window {
         let mut has_junk = !msgs.is_empty();
         for (folder, _) in msgs {
             let Some(ctl) = self.account_of(folder) else { continue };
-            has_junk &= ctl.special.borrow().as_ref().is_some_and(|s| s.junk.is_some());
+            has_junk &= ctl.eng.special().as_ref().is_some_and(|s| s.junk.is_some());
             let p = folder_place(&ctl, folder);
             if !places.contains(&p) {
                 places.push(p);
@@ -1935,17 +1469,54 @@ impl Window {
         }
     }
 
+    fn connect_engine(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        self.engine.connect(move |event| {
+            let Some(this) = weak.upgrade() else { return };
+            let ctl = |uid: &str| this.accounts.borrow().iter().find(|c| c.account.uid == uid).cloned();
+            match event {
+                engine::Event::Accounts => this.load_accounts(),
+                engine::Event::SyncState(uid) => {
+                    if let Some(ctl) = ctl(uid) {
+                        ctl.obj.set_sync_message(ctl.eng.message().as_str());
+                        ctl.obj.set_sync_state(match ctl.eng.state() {
+                            engine::SyncState::Idle => SyncState::Idle,
+                            engine::SyncState::Syncing => SyncState::Syncing,
+                            engine::SyncState::Offline => SyncState::Offline,
+                            engine::SyncState::Error => SyncState::Error,
+                        });
+                    }
+                }
+                engine::Event::Folders { account, nodes, rebuild } => {
+                    if let Some(ctl) = ctl(account) {
+                        this.set_folders(&ctl, nodes, *rebuild);
+                    }
+                }
+                engine::Event::Paused(_) => this.update_pause_banner(),
+                engine::Event::InboxReady(_) | engine::Event::Synced(_) => {}
+            }
+        });
+        // At startup each cached tree waits until the folder it opens is
+        // listed.
+        let weak = Rc::downgrade(self);
+        self.engine.set_settle(move || {
+            let opening = weak.upgrade().and_then(|this| this.opening.borrow_mut().take());
+            Box::pin(async move {
+                if let Some(h) = opening {
+                    let _ = h.await;
+                }
+            })
+        });
+    }
+
+    /// Follows the engine's accounts, keeping the rows of those already
+    /// shown.
     fn load_accounts(self: &Rc<Self>) {
-        let found = salutations_core::mail_accounts(&self.registry);
+        let found = self.engine.accounts();
         let mut accounts = self.accounts.borrow_mut();
-        accounts.retain(|ctl| found.iter().any(|a| a.uid == ctl.account.uid));
-        let mut new = Vec::new();
-        // The user's order first, then the rest by name (as found).
-        let saved = Settings::get().account_order;
-        let mut order: Vec<String> = found.iter().map(|a| a.uid.clone()).collect();
-        order.sort_by_key(|u| saved.iter().position(|s| s == u).unwrap_or(usize::MAX));
-        for a in found {
-            if let Some(ctl) = accounts.iter().find(|c| c.account.uid == a.uid) {
+        accounts.retain(|ctl| found.iter().any(|a| Rc::ptr_eq(a, &ctl.eng)));
+        for eng in &found {
+            if let Some(ctl) = accounts.iter().find(|c| Rc::ptr_eq(&c.eng, eng)) {
                 // A rename (in GOA, for instance) arrives as a change of the
                 // source the account already reads its name from.
                 let name = ctl.account.display_name();
@@ -1954,41 +1525,14 @@ impl Window {
                 }
                 continue;
             }
-            let special = SpecialFolders::load(&a.uid);
-            let ctl = Rc::new(AccountCtl {
-                obj: FolderObject::account(&a.uid, &a.display_name()),
-                account: a,
-                store: RefCell::new(None),
-                abort: RefCell::new(None),
-                again: Cell::new(false),
-                failures: Cell::new(0),
-                retry: RefCell::new(None),
-                watching: Cell::new(false),
-                sync_started: Cell::new(None),
-                unread: Cell::new(None),
-                special: RefCell::new(special),
-                special_checked: Cell::new(false),
-                sign_in_failed: Cell::new(false),
-                timer: RefCell::new(None),
-                paused: Cell::new(false),
-                keepalive: RefCell::new(None),
-                synced: RefCell::new(HashSet::new()),
-                last_cutoff: Cell::new(None),
-                maintaining: Cell::new(false),
-                maintain_again: Cell::new(None),
-                last_sync: Cell::new(None),
-                inbox: RefCell::new(None),
-                noted: RefCell::new(Vec::new()),
-                combined: RefCell::new(Vec::new()),
-                last_uid: Cell::new(None),
-                expected: RefCell::new(Vec::new()),
-                sending: Cell::new(false),
+            accounts.push(Rc::new(AccountCtl {
+                obj: FolderObject::account(&eng.account.uid, &eng.account.display_name()),
+                account: eng.account.clone(),
+                eng: eng.clone(),
                 sending_uid: RefCell::new(None),
-            });
-            accounts.push(ctl.clone());
-            new.push(ctl);
+            }));
         }
-        accounts.sort_by_key(|c| order.iter().position(|u| *u == c.account.uid));
+        accounts.sort_by_key(|c| found.iter().position(|a| Rc::ptr_eq(a, &c.eng)));
         let objs: Vec<FolderObject> = accounts.iter().map(|c| c.obj.clone()).collect();
         drop(accounts);
         // Rebuilding the rows would collapse every expanded folder, so it
@@ -2000,60 +1544,13 @@ impl Window {
             store.splice(0, store.n_items(), &objs);
         }
         self.update_title();
-        let this = self.clone();
-        glib::spawn_future_local(async move {
-            // A paused account syncs when the pause ends, or when asked.
-            for ctl in &new {
-                ctl.paused.set(this.paused(ctl));
-                this.apply_holds(ctl);
-            }
-            this.show_cached(&new).await;
-            for ctl in new {
-                if !ctl.paused.get() {
-                    this.sync(ctl);
-                }
-            }
-        });
-    }
-
-    /// Shows the cached folder trees and opens the first account's INBOX
-    /// from Camel's summaries before any connection. The session is offline
-    /// meanwhile, since Camel connects a store on any folder call while it is
-    /// online. Skipped when a store is already connecting or connected, as
-    /// taking the session offline would fail its operations.
-    async fn show_cached(self: &Rc<Self>, new: &[Rc<AccountCtl>]) {
-        let camel_session = self.session.upcast_ref::<camel::Session>();
-        // Stores are created online so they can later connect without
-        // Camel's go-online step (see Session::connect_future()).
-        let stores: Vec<_> = new.iter().filter_map(|c| self.store_for(c).ok().map(|s| (c.clone(), s))).collect();
-        let busy = camel_session
-            .list_services()
-            .iter()
-            .any(|s| s.connection_status() != camel::ServiceConnectionStatus::Disconnected);
-        if busy || !camel_session.is_online() {
-            return;
-        }
-        camel_session.set_online(false);
-        for (ctl, store) in &stores {
-            if let Ok(cached) = self.session.folders_future(store, false).await {
-                crate::debug::log(&format!("{}: cached tree, {} top-level folders", ctl.account.uid, cached.len()));
-                self.set_folders(ctl, &cached, false);
-                let opening = self.opening.borrow_mut().take();
-                if let Some(h) = opening {
-                    let _ = h.await;
-                }
-            }
-        }
-        camel_session.set_online(true);
     }
 
     fn sync_button_pressed(self: &Rc<Self>, obj: &FolderObject, button: &gtk::Button) {
         let Some(ctl) = self.accounts.borrow().iter().find(|c| &c.obj == obj).cloned() else { return };
         match obj.sync_state() {
             SyncState::Syncing => {
-                if let Some(tx) = ctl.abort.borrow_mut().take() {
-                    let _ = tx.send(());
-                }
+                self.engine.cancel_sync(&ctl.eng);
             }
             SyncState::Error => {
                 let text = gtk::Label::builder()
@@ -2066,7 +1563,7 @@ impl Window {
                 retry.add_css_class("suggested-action");
                 let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
                 buttons.set_halign(gtk::Align::End);
-                let accounts = ctl.sign_in_failed.get().then(|| {
+                let accounts = ctl.eng.sign_in_failed().then(|| {
                     gtk::Button::builder()
                         .label("Open _Online Accounts")
                         .use_underline(true)
@@ -2095,7 +1592,7 @@ impl Window {
                 retry.connect_clicked(move |_| {
                     p.popdown();
                     if let Some(this) = weak.upgrade() {
-                        this.sync(ctl.clone());
+                        this.engine.sync(&ctl.eng);
                     }
                 });
                 pop.connect_closed(|p| {
@@ -2104,216 +1601,14 @@ impl Window {
                 });
                 pop.popup();
             }
-            SyncState::Idle | SyncState::Offline => self.sync(ctl),
+            SyncState::Idle | SyncState::Offline => self.engine.sync(&ctl.eng),
         }
-    }
-
-    fn store_for(&self, ctl: &AccountCtl) -> Result<camel::Store, glib::Error> {
-        if let Some(s) = ctl.store.borrow().as_ref() {
-            return Ok(s.clone());
-        }
-        let s = self.session.store(&ctl.account)?;
-        *ctl.store.borrow_mut() = Some(s.clone());
-        self.apply_holds(ctl);
-        Ok(s)
-    }
-
-    /// A connection dropped outside a sync (the server closed it, or push
-    /// ended) is restored by syncing again shortly.
-    fn watch_connection(self: &Rc<Self>, ctl: &Rc<AccountCtl>, store: &camel::Store) {
-        if ctl.watching.replace(true) {
-            return;
-        }
-        let refs = std::sync::Arc::new(glib::thread_guard::ThreadGuard::new((Rc::downgrade(self), Rc::downgrade(ctl))));
-        store.connect_notify(Some("connection-status"), move |store, _| {
-            if store.connection_status() != camel::ServiceConnectionStatus::Disconnected {
-                return;
-            }
-            // Camel notifies from its worker threads too; the references are
-            // only touched on the main thread.
-            let refs = refs.clone();
-            glib::MainContext::default().invoke(move || {
-                let (Some(this), Some(ctl)) = (refs.get_ref().0.upgrade(), refs.get_ref().1.upgrade()) else { return };
-                // Only a drop after a good sync: failed attempts have a growing
-                // retry delay.
-                if ctl.obj.sync_state() == SyncState::Idle
-                    && ctl.retry.borrow().is_none()
-                    && gio::NetworkMonitor::default().is_network_available()
-                {
-                    this.schedule_retry(&ctl, 5);
-                }
-            });
-        });
-    }
-
-    /// Disconnects and syncs again, so a changed connection setting applies.
-    fn reconnect(self: &Rc<Self>, ctl: &Rc<AccountCtl>) {
-        self.resync(ctl, true);
-    }
-
-    /// Ends a running sync and starts another; `drop_connection` first
-    /// closes the connection without the polite logout, for sockets that
-    /// sleep or a network change may have left dead.
-    fn resync(self: &Rc<Self>, ctl: &Rc<AccountCtl>, drop_connection: bool) {
-        crate::debug::log(&format!("{}: resync (dropping the connection: {drop_connection})", ctl.account.uid));
-        if let Some(tx) = ctl.abort.borrow_mut().take() {
-            let _ = tx.send(());
-        }
-        let Some(store) = ctl.store.borrow().clone() else {
-            self.sync(ctl.clone());
-            return;
-        };
-        let (this, ctl) = (self.clone(), ctl.clone());
-        glib::spawn_future_local(async move {
-            if drop_connection {
-                let _ = glib::future_with_timeout(
-                    std::time::Duration::from_secs(5),
-                    store.disconnect_future(false, glib::ffi::G_PRIORITY_DEFAULT),
-                )
-                .await;
-            }
-            // The ended sync gives up its state when it notices the abort,
-            // which is after this point.
-            if ctl.obj.sync_state() == SyncState::Syncing {
-                ctl.again.set(true);
-            } else {
-                this.sync(ctl);
-            }
-        });
-    }
-
-    /// Tries again after `seconds`, replacing any retry already waiting.
-    /// Without a network, the network's return syncs instead.
-    fn schedule_retry(self: &Rc<Self>, ctl: &Rc<AccountCtl>, seconds: u32) {
-        if let Some(id) = ctl.retry.borrow_mut().take() {
-            id.remove();
-        }
-        if self.paused(ctl) || !gio::NetworkMonitor::default().is_network_available() {
-            return;
-        }
-        let (weak, c) = (Rc::downgrade(self), Rc::downgrade(ctl));
-        let id = glib::timeout_add_seconds_local_once(seconds, move || {
-            let (Some(this), Some(ctl)) = (weak.upgrade(), c.upgrade()) else { return };
-            ctl.retry.borrow_mut().take();
-            this.sync(ctl);
-        });
-        *ctl.retry.borrow_mut() = Some(id);
-    }
-
-    /// Retries a failed sync, less often each time but never less often
-    /// than the account is checked. An account never checked stops
-    /// retrying after the longest step.
-    fn retry_failed(self: &Rc<Self>, ctl: &Rc<AccountCtl>) {
-        let n = ctl.failures.get() as usize;
-        ctl.failures.set(ctl.failures.get().saturating_add(1));
-        let interval = match self.refresh_now(ctl) {
-            offline::Refresh::Minutes(m) => m.saturating_mul(60),
-            offline::Refresh::Never if n >= RETRY_SECONDS.len() => return,
-            offline::Refresh::Never => u32::MAX,
-        };
-        let delay = RETRY_SECONDS[n.min(RETRY_SECONDS.len() - 1)].min(interval);
-        self.schedule_retry(ctl, delay);
-    }
-
-    /// Connects, refreshes the folder tree and the open folder.
-    fn sync(self: &Rc<Self>, ctl: Rc<AccountCtl>) {
-        if ctl.obj.sync_state() == SyncState::Syncing {
-            ctl.again.set(true);
-            return;
-        }
-        if let Some(id) = ctl.retry.borrow_mut().take() {
-            id.remove();
-        }
-        let (tx, rx) = futures_channel::oneshot::channel::<()>();
-        *ctl.abort.borrow_mut() = Some(tx);
-        ctl.obj.set_sync_state(SyncState::Syncing);
-        ctl.sync_started.set(Some(std::time::Instant::now()));
-        let this = self.clone();
-        glib::spawn_future_local(async move {
-            // Dropping the sync's future when aborted cancels its Camel calls.
-            let result = match race(this.sync_inner(&ctl), rx).await {
-                Either::Left(r) => Some(r),
-                Either::Right(_) => None,
-            };
-            ctl.abort.borrow_mut().take();
-            match result {
-                None => ctl.obj.set_sync_state(SyncState::Idle),
-                Some(Ok(())) => {
-                    ctl.failures.set(0);
-                    ctl.obj.set_sync_state(SyncState::Idle);
-                    this.retry_waiting(&ctl);
-                    this.update_badge();
-                }
-                Some(Err(e)) => {
-                    crate::debug::log(&format!("{}: sync failed: {}", ctl.account.uid, e.message()));
-                    let auth = e.matches(camel::ServiceError::CantAuthenticate);
-                    ctl.sign_in_failed.set(auth);
-                    ctl.obj.set_sync_message(e.message());
-                    ctl.obj.set_sync_state(if is_offline(&e) { SyncState::Offline } else { SyncState::Error });
-                    // A rejected sign-in waits for the user; anything else
-                    // is tried again, less often each time.
-                    if !auth {
-                        this.retry_failed(&ctl);
-                    }
-                }
-            }
-            if ctl.again.replace(false) {
-                this.sync(ctl);
-            }
-        });
-    }
-
-    async fn sync_inner(self: &Rc<Self>, ctl: &Rc<AccountCtl>) -> Result<(), glib::Error> {
-        let store = self.store_for(ctl)?;
-        crate::debug::log(&format!("{}: sync start", ctl.account.uid));
-        self.watch_connection(ctl, &store);
-        within(STEP_LIMIT, self.session.connect_future(&store)).await?;
-        crate::debug::log(&format!("{}: connected", ctl.account.uid));
-        let fresh = within(STEP_LIMIT, self.session.folders_future(&store, true)).await?;
-        crate::debug::log(&format!("{}: folder list refreshed", ctl.account.uid));
-        self.set_folders(ctl, &fresh, false);
-        let open = self
-            .open
-            .borrow()
-            .as_ref()
-            .filter(|o| Rc::ptr_eq(&o.account, ctl))
-            .map(|o| o.folder.clone());
-        let refreshed = open.as_ref().and_then(|f| f.full_name()).map(|n| n.to_string());
-        if let Some(folder) = open {
-            folder.refresh_info_future(glib::ffi::G_PRIORITY_DEFAULT).await?;
-            crate::debug::log(&format!("{}: open folder refreshed", ctl.account.uid));
-        }
-        if !ctl.special_checked.get()
-            && let Ok(special) = self.session.special_folders(&store).await
-        {
-            let special = special.merged(ctl.special.borrow().as_ref());
-            crate::debug::log(&format!("{}: special folders checked", ctl.account.uid));
-            ctl.special_checked.set(true);
-            if ctl.special.borrow().as_ref() != Some(&special) {
-                if let Err(e) = special.save(&ctl.account.uid) {
-                    glib::g_warning!("salutations", "Cannot save special folders: {}", e);
-                }
-                *ctl.special.borrow_mut() = Some(special);
-                self.set_folders(ctl, &fresh, true);
-            }
-        }
-        if ctl.timer.borrow().is_none() {
-            self.first_sync_setup(ctl, &store).await;
-            self.schedule_refresh(ctl);
-        }
-        self.watch_inbox(ctl, &store).await;
-        ctl.last_sync.set(Some(std::time::Instant::now()));
-        // The first run of a session checks every message against the window.
-        let full = ctl.last_cutoff.get().is_none();
-        self.maintain(ctl, full, refreshed);
-        Ok(())
     }
 
     /// Updates counts in place when the tree is unchanged, so expanded rows
     /// stay expanded; rebuilds it otherwise or when `rebuild` is set.
     fn set_folders(self: &Rc<Self>, ctl: &Rc<AccountCtl>, nodes: &[camel::FolderNode], rebuild: bool) {
-        let special = ctl.special.borrow().clone().unwrap_or_default();
-        let nodes = &sort_folders(nodes, &special)[..];
+        let special = ctl.eng.special().unwrap_or_default();
         fn names(nodes: &[camel::FolderNode], out: &mut Vec<String>) {
             for n in nodes {
                 out.push(n.full_name.clone());
@@ -2376,10 +1671,6 @@ impl Window {
     }
 
     fn open_folder(self: &Rc<Self>, obj: &FolderObject) {
-        if self.shed.get() {
-            *self.reopen.borrow_mut() = Some((obj.clone(), None));
-            return;
-        }
         // A rebuilt tree has new objects for the same folders; the open
         // folder stays open and only its row object is swapped.
         if let Some(o) = self.open.borrow_mut().as_mut()
@@ -2400,12 +1691,12 @@ impl Window {
         }
         self.title.set_title(&obj.title());
         self.title.set_subtitle(&ctl.account.display_name());
-        let junk = ctl.special.borrow().as_ref().and_then(|s| s.junk.clone()).is_some_and(|j| j == obj.full_name());
+        let junk = ctl.eng.special().as_ref().and_then(|s| s.junk.clone()).is_some_and(|j| j == obj.full_name());
         crate::people::set_junk_shown(junk);
         let obj = obj.clone();
         let this = self.clone();
         let handle = glib::spawn_future_local(async move {
-            let Ok(store) = this.store_for(&ctl) else { return };
+            let Ok(store) = this.engine.store_for(&ctl.eng) else { return };
             let folder = match this.session.folder_future(&store, &obj.full_name()).await {
                 Ok(f) => f,
                 Err(e) => {
@@ -2428,12 +1719,10 @@ impl Window {
                     this.folder_changed(folder, changes);
                 }
             });
-            let archive = ctl.special.borrow().as_ref().and_then(|s| s.archive.clone());
+            let archive = ctl.eng.special().as_ref().and_then(|s| s.archive.clone());
             this.list.set_in_archive(archive.as_deref() == folder.full_name().as_deref());
             this.list.set_folder(Some(&folder), ctl.account.address.clone());
-            if let Some(uid) = this.reopen_uid.borrow_mut().take() {
-                this.list.open_uid(&uid);
-            }
+            this.report_shown();
             // A new folder starts unfiltered.
             if let Some(a) = this.window.lookup_action("filter").and_downcast::<gio::SimpleAction>() {
                 a.set_state(&"all".to_variant());
@@ -2443,6 +1732,7 @@ impl Window {
             if let Some(s) = folder.folder_summary() {
                 obj.set_unread(s.unread_count() as i32 - this.hidden_unread(&folder));
             }
+            this.engine.set_open(Some(folder.clone()));
             *this.open.borrow_mut() = Some(OpenFolder { account: ctl, obj, folder: folder.clone(), handler });
             this.update_pause_banner();
             this.update_empty_banner();
@@ -2454,62 +1744,6 @@ impl Window {
             let _ = folder.refresh_info_future(glib::ffi::G_PRIORITY_DEFAULT).await;
         });
         *self.opening.borrow_mut() = Some(handle);
-    }
-
-    /// Sheds and restores with the window's visibility while Salutations
-    /// runs in the background.
-    pub fn watch_background(self: &Rc<Self>) {
-        let weak = Rc::downgrade(self);
-        self.window.connect_visible_notify(move |w| {
-            let Some(this) = weak.upgrade() else { return };
-            if w.is_visible() {
-                this.restore();
-            } else if Settings::get().run_in_background {
-                this.shed();
-            }
-        });
-    }
-
-    /// Lets go of what only the window needs while it is hidden: the open
-    /// folder and its rows, the shown message and the web view's process,
-    /// cached pictures, and the window's graphics. Inbox watching,
-    /// notifications and rules keep running.
-    pub fn shed(self: &Rc<Self>) {
-        if self.shed.replace(true) {
-            return;
-        }
-        if let Some(h) = self.opening.borrow_mut().take() {
-            h.abort();
-        }
-        let uid = self.viewer.current().map(|(_, u)| u);
-        if let Some(o) = self.open.borrow_mut().take() {
-            o.folder.disconnect(o.handler);
-            *self.reopen.borrow_mut() = Some((o.obj, uid));
-        } else if let Some(obj) = self.folders.selected() {
-            *self.reopen.borrow_mut() = Some((obj, None));
-        }
-        self.list.set_folder(None, None);
-        self.viewer.release();
-        crate::people::release_images();
-        crate::debug::log("background: shed");
-        let window = self.window.clone();
-        // After the hide has finished.
-        glib::idle_add_local_once(move || {
-            if !window.is_visible() {
-                WidgetExt::unrealize(&window);
-            }
-            trim_memory();
-        });
-    }
-
-    fn restore(self: &Rc<Self>) {
-        if !self.shed.replace(false) {
-            return;
-        }
-        crate::debug::log("background: restored");
-        let Some((obj, uid)) = self.reopen.borrow_mut().take() else { return };
-        *self.reopen_uid.borrow_mut() = uid;
-        self.open_folder(&obj);
     }
 
     fn folder_changed(&self, folder: &camel::Folder, changes: &camel::FolderChanges) {
@@ -2626,13 +1860,13 @@ impl Window {
                 (true, false) => (false, Some(why)),
             }
         };
-        let has_junk = |t: &Target| t.account.special.borrow().as_ref().is_some_and(|s| s.junk.is_some());
+        let has_junk = |t: &Target| t.account.eng.special().as_ref().is_some_and(|s| s.junk.is_some());
         let rules = [
             ("delete", check(&|t| place(t) != Place::Trash, "not for messages in Trash")),
             (
                 "trash",
                 check(
-                    &|t| place(t) != Place::Trash && t.account.special.borrow().as_ref().is_some_and(|s| s.trash.is_some()),
+                    &|t| place(t) != Place::Trash && t.account.eng.special().as_ref().is_some_and(|s| s.trash.is_some()),
                     "not for messages in Trash",
                 ),
             ),
@@ -2683,198 +1917,48 @@ impl Window {
         vec![Target { account, folder, uids: vec![uid], thread: false }]
     }
 
-    /// Starts watching the account's INBOX for new mail, once per session,
-    /// and notifies about mail that arrived since the last run.
-    async fn watch_inbox(self: &Rc<Self>, ctl: &Rc<AccountCtl>, store: &camel::Store) {
-        if ctl.inbox.borrow().is_some() {
-            return;
-        }
-        let Ok(folder) = self.session.folder_future(store, "INBOX").await else { return };
-        if ctl.inbox.borrow().is_some() {
-            return;
-        }
-        let uids: Vec<String> = folder.uids().iter().map(|u| u.to_string()).collect();
-        if ctl.last_uid.get().is_none() {
-            // The first run ever starts from what is there, without
-            // notifying about all of it.
-            let saved = load_last_uid(&ctl.account.uid);
-            let start = saved.unwrap_or_else(|| uids.iter().filter_map(|u| u.parse().ok()).max().unwrap_or(0));
-            ctl.last_uid.set(Some(start));
-            if saved.is_none() {
-                save_last_uid(&ctl.account.uid, start);
+    /// What the background process asks: to show the window, to compose
+    /// or import, a notification's button, and news about sending.
+    fn request_from_background(self: &Rc<Self>, r: Request) {
+        match r {
+            Request::Present => self.window.present(),
+            Request::Compose(link) => {
+                self.window.present();
+                self.compose_external(salutations_core::mailto::parse(&link));
             }
-        }
-        let weak = glib::thread_guard::ThreadGuard::new(Rc::downgrade(self));
-        let c = Rc::downgrade(ctl);
-        let c = glib::thread_guard::ThreadGuard::new(c);
-        let handler = folder.connect_changed(move |folder, changes| {
-            if let (Some(this), Some(ctl)) = (weak.get_ref().upgrade(), c.get_ref().upgrade()) {
-                this.inbox_changed(&ctl, folder, changes);
+            Request::Import(paths) => {
+                self.window.present();
+                self.import_files(paths.iter().map(gio::File::for_path).collect(), None);
             }
-        });
-        *ctl.inbox.borrow_mut() = Some((folder.clone(), handler));
-        self.notify_new(ctl, &folder, &uids);
-        self.update_badge();
-    }
-
-    fn inbox_changed(self: &Rc<Self>, ctl: &Rc<AccountCtl>, folder: &camel::Folder, changes: &camel::FolderChanges) {
-        if !changes.added.is_empty() {
-            self.download_arrivals(ctl, folder);
-        }
-        // Read, moved or deleted anywhere: its notification goes.
-        let gone = |uid: &String| {
-            changes.removed.contains(uid) || folder.message_info(uid).is_none() || folder.message_flags(uid) & (SEEN | DELETED) != 0
-        };
-        let withdrawn: Vec<String> = ctl.noted.borrow().iter().filter(|u| gone(u)).cloned().collect();
-        for uid in &withdrawn {
-            self.notifier.withdraw(&notify::Subject::Message { account: ctl.account.uid.clone(), uid: uid.clone() });
-        }
-        ctl.noted.borrow_mut().retain(|u| !withdrawn.contains(u));
-        let before = ctl.combined.borrow().len();
-        ctl.combined.borrow_mut().retain(|u| !gone(u));
-        let after = ctl.combined.borrow().len();
-        if after != before {
-            if after == 0 {
-                self.notifier.withdraw(&notify::Subject::Combined { account: ctl.account.uid.clone() });
-            } else {
-                self.show_combined(ctl, folder, false);
+            Request::Notification(kind, account, uid) => {
+                let action = match kind.as_str() {
+                    "open" => NoteAction::Open { account, uid },
+                    "reply" => NoteAction::Reply { account, uid },
+                    "delete" => NoteAction::Delete { account, uid },
+                    "junk" => NoteAction::Junk { account, uid },
+                    _ => NoteAction::OpenInbox { account },
+                };
+                self.notification_action(action);
             }
-        }
-        self.notify_new(ctl, folder, &changes.added);
-        self.update_badge();
-    }
-
-    /// Runs the account's rules on messages among `uids` that are newer
-    /// than any considered before, then notifies about those still unread
-    /// in INBOX.
-    fn notify_new(self: &Rc<Self>, ctl: &Rc<AccountCtl>, folder: &camel::Folder, uids: &[String]) {
-        let last = ctl.last_uid.get().unwrap_or(0);
-        let mut fresh: Vec<(u64, String)> =
-            uids.iter().filter_map(|u| u.parse::<u64>().ok().map(|n| (n, u.clone()))).filter(|(n, _)| *n > last).collect();
-        if fresh.is_empty() {
-            return;
-        }
-        fresh.sort();
-        let top = fresh.last().map_or(last, |(n, _)| *n);
-        ctl.last_uid.set(Some(top));
-        save_last_uid(&ctl.account.uid, top);
-        let mut expected = ctl.expected.borrow_mut();
-        let fresh: Vec<String> = fresh
-            .into_iter()
-            .map(|(_, u)| u)
-            .filter(|u| {
-                // A message Salutations moved here is not new mail.
-                let Some(k) = message_key(folder, u) else { return false };
-                match expected.iter().position(|e| *e == k) {
-                    Some(i) => {
-                        expected.swap_remove(i);
-                        false
-                    }
-                    None => true,
+            Request::Outbox(account, uid) => {
+                if let Some(ctl) = self.accounts.borrow().iter().find(|c| c.account.uid == account) {
+                    *ctl.sending_uid.borrow_mut() = uid;
                 }
-            })
-            .collect();
-        drop(expected);
-        if fresh.is_empty() {
-            return;
-        }
-        let rules: Vec<rules::Rule> =
-            rules::load(&ctl.account.uid).into_iter().filter(|r| !r.conditions.is_empty() && r.does_anything()).collect();
-        if rules.is_empty() {
-            self.notify_fresh(ctl, folder, fresh);
-            return;
-        }
-        let (this, ctl, folder) = (self.clone(), ctl.clone(), folder.clone());
-        glib::spawn_future_local(async move {
-            let (kept, _) = this.run_rules(&ctl, &folder, fresh, &rules).await;
-            this.notify_fresh(&ctl, &folder, kept);
-        });
-    }
-
-    /// Notifies about the messages among `fresh`, new mail that the rules
-    /// left in INBOX, that are unread.
-    fn notify_fresh(&self, ctl: &Rc<AccountCtl>, folder: &camel::Folder, fresh: Vec<String>) {
-        const JUNK: u32 = camel::MessageFlags::JUNK.bits();
-        let fresh: Vec<String> = fresh.into_iter().filter(|u| folder.message_flags(u) & (SEEN | DELETED | JUNK) == 0).collect();
-        if fresh.is_empty() {
-            return;
-        }
-        // Nothing while the user is looking at this INBOX.
-        let watching = self.window.is_active() && self.open.borrow().as_ref().is_some_and(|o| &o.folder == folder);
-        if watching {
-            return;
-        }
-        let sound = !Settings::get().silent_accounts.contains(&ctl.account.uid);
-        let total = ctl.noted.borrow().len() + fresh.len();
-        let limit = Settings::get().notification_limit;
-        if !ctl.combined.borrow().is_empty() || limit.is_some_and(|n| total > n as usize) {
-            let noted: Vec<String> = ctl.noted.borrow_mut().drain(..).collect();
-            for uid in &noted {
-                self.notifier.withdraw(&notify::Subject::Message { account: ctl.account.uid.clone(), uid: uid.clone() });
+                self.update_outbox_notes();
             }
-            let mut combined = ctl.combined.borrow_mut();
-            combined.extend(noted);
-            combined.extend(fresh);
-            drop(combined);
-            self.show_combined(ctl, folder, sound);
-            return;
-        }
-        let junk = ctl.special.borrow().as_ref().is_some_and(|s| s.junk.is_some());
-        for uid in fresh {
-            let Some(info) = folder.message_info(&uid) else { continue };
-            let from = crate::message_list::parse_from(&info.from().unwrap_or_default());
-            let subject = info.subject().map(|s| s.to_string()).unwrap_or_default();
-            let preview = info.preview().map(|p| salutations_core::render::clean_preview(&p)).unwrap_or_default();
-            let verified = info
-                .user_header("Authentication-Results")
-                .and_then(|h| salutations_core::verify::parse(&h).verified_domain(&from.email));
-            ctl.noted.borrow_mut().push(uid.clone());
-            // The contact's photo can take a moment to fetch.
-            let (notifier, account) = (self.notifier.clone(), ctl.account.uid.clone());
-            glib::spawn_future_local(async move {
-                let (contact_name, photo) = crate::people::lookup(&from.email, verified.as_deref()).await;
-                notifier.message(notify::MessageNote {
-                    account: &account,
-                    uid: &uid,
-                    sender: from.display(),
-                    contact_name,
-                    photo,
-                    subject: &subject,
-                    preview: &preview,
-                    sound,
-                    junk,
-                });
-            });
+            Request::Toast(text) => self.toast(&text, false),
         }
     }
 
-    fn show_combined(&self, ctl: &Rc<AccountCtl>, folder: &camel::Folder, sound: bool) {
-        let combined = ctl.combined.borrow().clone();
-        let senders: Vec<String> = combined
-            .iter()
-            .rev()
-            .filter_map(|u| folder.message_info(u))
-            .map(|i| crate::message_list::parse_from(&i.from().unwrap_or_default()).display().to_string())
-            .collect();
-        self.notifier.combined(&ctl.account.uid, &ctl.account.display_name(), combined.len(), &senders, sound);
+    /// Tells the background process whether the folder shown is in front
+    /// of the user.
+    fn report_shown(&self) {
+        let folder = self.open.borrow().as_ref().map(|o| o.folder.clone());
+        remote::shown(self.window.is_active(), folder.as_ref());
     }
 
-    /// The unread count of every account's INBOX. An account whose INBOX
-    /// is unavailable (not yet opened, or reconnecting) counts with its
-    /// last known number rather than dropping out of the total.
-    fn update_badge(&self) {
-        let mut total = 0;
-        for c in self.accounts.borrow().iter() {
-            if let Some(n) = c.inbox.borrow().as_ref().and_then(|(f, _)| f.folder_summary()).map(|s| s.unread_count() as i64) {
-                c.unread.set(Some(n));
-            }
-            total += c.unread.get().unwrap_or(0);
-        }
-        self.notifier.set_badge(total);
-    }
-
-    fn notification_action(self: &Rc<Self>, action: notify::Action) {
-        use notify::Action as A;
+    fn notification_action(self: &Rc<Self>, action: NoteAction) {
+        use NoteAction as A;
         let account = match &action {
             A::Open { account, .. }
             | A::Delete { account, .. }
@@ -2883,7 +1967,7 @@ impl Window {
             | A::OpenInbox { account } => account.clone(),
         };
         let Some(ctl) = self.accounts.borrow().iter().find(|c| c.account.uid == account).cloned() else { return };
-        let Some(inbox) = ctl.inbox.borrow().as_ref().map(|(f, _)| f.clone()) else { return };
+        let Some(inbox) = ctl.eng.inbox() else { return };
         let reply = matches!(action, A::Reply { .. });
         match action {
             A::Open { uid, .. } | A::Reply { uid, .. } => {
@@ -2910,7 +1994,7 @@ impl Window {
             }
             A::Delete { uid, .. } => {
                 // Deleting for good asks first, which needs the window.
-                if ctl.special.borrow().as_ref().and_then(|s| s.trash.as_ref()).is_none() {
+                if ctl.eng.special().as_ref().and_then(|s| s.trash.as_ref()).is_none() {
                     self.window.present();
                 }
                 self.request(Op::Delete, Target { account: ctl, folder: inbox, uids: vec![uid], thread: false });
@@ -2957,13 +2041,13 @@ impl Window {
     /// Whether `folder` is its account's Drafts folder.
     fn is_drafts(&self, folder: &camel::Folder) -> bool {
         let Some(account) = self.account_of(folder) else { return false };
-        let drafts = account.special.borrow().as_ref().and_then(|s| s.drafts.clone());
+        let drafts = account.eng.special().as_ref().and_then(|s| s.drafts.clone());
         drafts.is_some() && folder.full_name().map(|n| n.to_string()) == drafts
     }
 
     fn account_of(&self, folder: &camel::Folder) -> Option<Rc<AccountCtl>> {
         let store = folder.parent_store()?;
-        self.accounts.borrow().iter().find(|c| c.store.borrow().as_ref() == Some(&store)).cloned()
+        self.accounts.borrow().iter().find(|c| c.eng.store().as_ref() == Some(&store)).cloned()
     }
 
     /// The filter button's look and the empty-list notice follow the filter.
@@ -3028,7 +2112,7 @@ impl Window {
             return;
         };
         glib::spawn_future_local(async move {
-            let connected = ctl.store.borrow().as_ref().is_some_and(|s| s.connection_status() == camel::ServiceConnectionStatus::Connected)
+            let connected = ctl.eng.connected()
                 && !matches!(ctl.obj.sync_state(), SyncState::Offline | SyncState::Error);
             let refreshed = connected && match within(STEP_LIMIT, folder.refresh_info_future(glib::ffi::G_PRIORITY_DEFAULT)).await {
                 Ok(()) => true,
@@ -3038,7 +2122,7 @@ impl Window {
                 }
             };
             if !refreshed {
-                this.resync(&ctl, true);
+                this.engine.resync(&ctl.eng, true);
                 // The sync starts after the connection closes.
                 glib::timeout_future(std::time::Duration::from_millis(500)).await;
                 while ctl.obj.sync_state() == SyncState::Syncing {
@@ -3088,8 +2172,8 @@ impl Window {
         }
         let id = self.viewer.message().and_then(|m| m.message_id()).map(|i| i.trim_matches(['<', '>', ' ']).to_string());
         let ctl = self.account_of(folder);
-        let sent = ctl.as_ref().and_then(|c| c.special.borrow().as_ref().and_then(|s| s.sent.clone()));
-        let store = ctl.as_ref().and_then(|c| c.store.borrow().clone());
+        let sent = ctl.as_ref().and_then(|c| c.eng.special().as_ref().and_then(|s| s.sent.clone()));
+        let store = ctl.as_ref().and_then(|c| c.eng.store());
         let (Some(id), Some(sent), Some(store)) = (id.filter(|i| !i.is_empty()), sent, store) else { return };
         let (this, folder, uid) = (self.clone(), folder.clone(), uid.to_string());
         glib::spawn_future_local(async move {
@@ -3187,7 +2271,7 @@ impl Window {
             // Summary matches first, for every folder in scope.
             let mut opened: Vec<(Rc<AccountCtl>, Vec<(camel::Folder, Option<String>)>)> = Vec::new();
             for (ctl, folders) in targets {
-                let Ok(store) = this.store_for(&ctl) else { continue };
+                let Ok(store) = this.engine.store_for(&ctl.eng) else { continue };
                 let mut list = Vec::new();
                 for (name, loc) in folders {
                     if !current(&this) {
@@ -3354,7 +2438,7 @@ impl Window {
                 self.transfer(&t, &dest_account, &dest.full_name, &format!("moved to {}", dest.path)).await;
             }
             Op::Archive => {
-                let archive = t.account.special.borrow().as_ref().and_then(|s| s.archive.clone());
+                let archive = t.account.eng.special().as_ref().and_then(|s| s.archive.clone());
                 let archive = match archive {
                     Some(a) => a,
                     None => match self.set_up_archive(&t.account).await {
@@ -3374,7 +2458,7 @@ impl Window {
                     self.update_targets();
                     return;
                 }
-                let Some(junk) = t.account.special.borrow().as_ref().and_then(|s| s.junk.clone()) else { return };
+                let Some(junk) = t.account.eng.special().as_ref().and_then(|s| s.junk.clone()) else { return };
                 if Settings::get().read_on_junk {
                     self.mark_read_moving(&t);
                 }
@@ -3410,7 +2494,7 @@ impl Window {
                 salutations_core::origins::forget(&ids);
             }
             Op::Delete => {
-                let trash = t.account.special.borrow().as_ref().and_then(|s| s.trash.clone());
+                let trash = t.account.eng.special().as_ref().and_then(|s| s.trash.clone());
                 let here = t.folder.full_name().map(|n| n.to_string());
                 match trash {
                     Some(trash) if here.as_deref() != Some(trash.as_str()) => {
@@ -3427,7 +2511,7 @@ impl Window {
                 }
             }
             Op::Trash => {
-                let trash = t.account.special.borrow().as_ref().and_then(|s| s.trash.clone());
+                let trash = t.account.eng.special().as_ref().and_then(|s| s.trash.clone());
                 let Some(trash) = trash else { return };
                 if t.folder.full_name().as_deref() == Some(trash.as_str()) {
                     return;
@@ -3448,10 +2532,10 @@ impl Window {
     /// Asks for the account's Archive folder, creating it if asked, and
     /// saves the choice. None when cancelled or on error.
     async fn set_up_archive(self: &Rc<Self>, ctl: &Rc<AccountCtl>) -> Option<String> {
-        let store = self.store_for(ctl).ok()?;
+        let store = self.engine.store_for(&ctl.eng).ok()?;
         let name = match manage::ask_archive_setup(&self.window).await? {
             manage::ArchiveSetup::Choose => {
-                let special = ctl.special.borrow().clone().unwrap_or_default();
+                let special = ctl.eng.special().unwrap_or_default();
                 let skip: Vec<String> = ["INBOX".to_string()]
                     .into_iter()
                     .chain([special.trash, special.junk, special.drafts].into_iter().flatten())
@@ -3478,17 +2562,12 @@ impl Window {
                 NAME.to_string()
             }
         };
-        let mut special = ctl.special.borrow().clone().unwrap_or_default();
+        let mut special = ctl.eng.special().unwrap_or_default();
         special.archive = Some(name.clone());
         special.archive_chosen = true;
-        if let Err(e) = special.save(&ctl.account.uid) {
-            glib::g_warning!("salutations", "Cannot save special folders: {}", e);
-        }
-        *ctl.special.borrow_mut() = Some(special);
+        self.engine.set_special(&ctl.eng, special);
         // The tree gets the new folder, or the chosen one's archive icon.
-        if let Ok(nodes) = self.session.folders_future(&store, true).await {
-            self.set_folders(ctl, &nodes, true);
-        }
+        self.engine.refresh_folders(&ctl.eng).await;
         Some(name)
     }
 
@@ -3561,7 +2640,7 @@ impl Window {
         let unread = self.unread_before.take();
         let shown = self.shows_any(t);
         let neighbor = if shown && !self.showing_results() { self.list.neighbor(&t.uids) } else { None };
-        let trash = t.account.special.borrow().as_ref().and_then(|s| s.trash.clone());
+        let trash = t.account.eng.special().as_ref().and_then(|s| s.trash.clone());
         if trash.as_deref() == Some(dest) {
             let ids: Vec<u64> = t.uids.iter().filter_map(|u| t.folder.message_info(u)).map(|i| i.message_id()).collect();
             if let Some(from) = t.folder.full_name() {
@@ -3792,7 +2871,7 @@ impl Window {
         dest_account: &Rc<AccountCtl>,
         dest: &str,
     ) -> Result<(camel::Folder, Vec<Option<String>>), String> {
-        let store = self.store_for(dest_account).map_err(|e| e.message().to_string())?;
+        let store = self.engine.store_for(&dest_account.eng).map_err(|e| e.message().to_string())?;
         let dest_folder = self
             .session
             .folder_future(&store, dest)
@@ -3802,9 +2881,6 @@ impl Window {
         // destination's summary, where they are found by comparing.
         let before: HashSet<String> = dest_folder.uids().iter().map(|u| u.to_string()).collect();
         let keys: Vec<MessageKey> = uids.iter().filter_map(|u| message_key(folder, u)).collect();
-        if dest.eq_ignore_ascii_case("INBOX") {
-            dest_account.expected.borrow_mut().extend(keys.iter().cloned());
-        }
         let (src, to, list) = (folder.clone(), dest_folder.clone(), uids.to_vec());
         let mut new_uids = gio::spawn_blocking(move || src.transfer_messages_to_sync(&list, &to, true, None::<&gio::Cancellable>))
             .await
@@ -3834,7 +2910,7 @@ impl Window {
     /// (queued): IMAPX moves messages flagged deleted in other folders to
     /// Trash instead of expunging them when the account has a Trash folder.
     async fn delete_permanently(self: &Rc<Self>, t: &Target) {
-        let trash = t.account.special.borrow().as_ref().and_then(|s| s.trash.clone());
+        let trash = t.account.eng.special().as_ref().and_then(|s| s.trash.clone());
         let here = t.folder.full_name().map(|n| n.to_string());
         if let Some(trash) = trash.filter(|trash| here.as_deref() != Some(trash.as_str())) {
             self.enqueue(t, &trash, true);
@@ -4011,29 +3087,6 @@ fn mark_unread(folder: &camel::Folder, uids: &[String]) {
     folder.thaw();
 }
 
-fn notify_state_path() -> std::path::PathBuf {
-    salutations_core::data_dir().join("notify-state.ini")
-}
-
-fn load_last_uid(account: &str) -> Option<u64> {
-    let kf = glib::KeyFile::new();
-    kf.load_from_file(notify_state_path(), glib::KeyFileFlags::NONE).ok()?;
-    kf.uint64(account, "last-uid").ok()
-}
-
-fn save_last_uid(account: &str, uid: u64) {
-    let kf = glib::KeyFile::new();
-    let path = notify_state_path();
-    let _ = kf.load_from_file(&path, glib::KeyFileFlags::NONE);
-    kf.set_uint64(account, "last-uid", uid);
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Err(e) = kf.save_to_file(&path) {
-        glib::g_warning!("salutations", "Cannot save notification state: {}", e);
-    }
-}
-
 /// What identifies a message across folders when its new UID is unknown.
 type MessageKey = (String, i64, String);
 
@@ -4064,7 +3117,7 @@ fn search_expression(query: &str, body: bool) -> String {
 /// Whether `folder` is its account's Trash or Junk.
 fn folder_place(ctl: &AccountCtl, folder: &camel::Folder) -> Place {
     let name = folder.full_name().map(|n| n.to_string());
-    let special = ctl.special.borrow();
+    let special = ctl.eng.special();
     let is = |f: Option<&String>| f.is_some() && f == name.as_ref();
     match special.as_ref() {
         Some(s) if is(s.trash.as_ref()) => Place::Trash,
@@ -4102,18 +3155,6 @@ fn all_folder_choices(accounts: &[Rc<AccountCtl>], exclude: Option<(&AccountCtl,
     out
 }
 
-/// Hands memory glibc keeps after frees back to the system; without it
-/// the process stays as large as its busiest moment.
-fn trim_memory() {
-    unsafe extern "C" {
-        fn malloc_trim(pad: usize) -> std::ffi::c_int;
-    }
-    // SAFETY: malloc_trim only releases free heap pages.
-    unsafe {
-        malloc_trim(0);
-    }
-}
-
 /// The account's folders as (full name, path) pairs in tree order, the
 /// path naming each parent: "Lists / Library".
 fn folder_paths(ctl: &AccountCtl) -> Vec<(String, String)> {
@@ -4131,7 +3172,7 @@ fn folder_paths(ctl: &AccountCtl) -> Vec<(String, String)> {
 }
 
 fn is_archive(ctl: &AccountCtl, folder: &camel::Folder) -> bool {
-    let archive = ctl.special.borrow().as_ref().and_then(|s| s.archive.clone());
+    let archive = ctl.eng.special().as_ref().and_then(|s| s.archive.clone());
     archive.is_some() && folder.full_name().map(|n| n.to_string()) == archive
 }
 
@@ -4193,73 +3234,6 @@ fn special_icons(s: &SpecialFolders) -> Vec<(&str, &'static str)> {
     .into_iter()
     .filter_map(|(name, icon)| name.as_deref().map(|n| (n, icon)))
     .collect()
-}
-
-/// Top level: INBOX, Drafts, Sent, Junk, Trash, Archive, then the rest by
-/// name. Subfolders keep the server's order.
-fn sort_folders(nodes: &[camel::FolderNode], s: &SpecialFolders) -> Vec<camel::FolderNode> {
-    let rank = |n: &camel::FolderNode| -> usize {
-        let is = |f: &Option<String>| f.as_deref() == Some(n.full_name.as_str());
-        match () {
-            _ if n.full_name.eq_ignore_ascii_case("INBOX") => 0,
-            _ if is(&s.drafts) => 1,
-            _ if is(&s.sent) => 2,
-            _ if is(&s.junk) => 3,
-            _ if is(&s.trash) => 4,
-            _ if is(&s.archive) => 5,
-            _ => 6,
-        }
-    };
-    let mut out = nodes.to_vec();
-    out.sort_by(|a, b| {
-        rank(a)
-            .cmp(&rank(b))
-            .then_with(|| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()))
-    });
-    out
-}
-
-fn metered() -> bool {
-    gio::NetworkMonitor::default().is_network_metered()
-}
-
-fn power_saver() -> bool {
-    gio::PowerProfileMonitor::get_default().is_power_saver_enabled()
-}
-
-enum Either<A, B> {
-    Left(A),
-    Right(B),
-}
-
-/// Whichever of `a` and `b` finishes first; the other is dropped.
-async fn race<A: std::future::Future, B: std::future::Future>(a: A, b: B) -> Either<A::Output, B::Output> {
-    let (mut a, mut b) = (std::pin::pin!(a), std::pin::pin!(b));
-    std::future::poll_fn(move |cx| {
-        if let std::task::Poll::Ready(v) = a.as_mut().poll(cx) {
-            return std::task::Poll::Ready(Either::Left(v));
-        }
-        if let std::task::Poll::Ready(v) = b.as_mut().poll(cx) {
-            return std::task::Poll::Ready(Either::Right(v));
-        }
-        std::task::Poll::Pending
-    })
-    .await
-}
-
-/// `step`, failing as timed out after `limit`.
-async fn within<T>(limit: std::time::Duration, step: impl std::future::Future<Output = Result<T, glib::Error>>) -> Result<T, glib::Error> {
-    glib::future_with_timeout(limit, step)
-        .await
-        .unwrap_or_else(|_| Err(glib::Error::new(gio::IOErrorEnum::TimedOut, "The server did not answer in time")))
-}
-
-fn is_offline(e: &glib::Error) -> bool {
-    use gio::IOErrorEnum as E;
-    [E::NetworkUnreachable, E::HostUnreachable, E::HostNotFound, E::TimedOut, E::ConnectionRefused]
-        .iter()
-        .any(|k| e.matches(*k))
-        || e.matches(camel::ServiceError::Unavailable)
 }
 
 /// The message list may take at most this share of the space beside the

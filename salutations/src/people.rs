@@ -24,11 +24,6 @@ use salutations_core::contacts::{self, Card, Contacts};
 /// How long a found image and a known absence stay cached on disk.
 const KEEP_FOUND: Duration = Duration::from_secs(7 * 24 * 3600);
 const KEEP_MISSING: Duration = Duration::from_secs(24 * 3600);
-/// How long a notification waits for an online picture before going out
-/// without one.
-const NOTE_WAIT: Duration = Duration::from_secs(5);
-/// A notification's picture, in pixels; brand logos are drawn at this size.
-const NOTE_SIZE: i32 = 96;
 
 /// Fetching, then the image or its absence.
 #[derive(Clone)]
@@ -472,17 +467,6 @@ thread_local! {
     static OFFLINE: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Drops the pictures decoded so far; the next look-up fetches them again,
-/// from the address book or the disk cache. Fetches under way are kept.
-pub fn release_images() {
-    let idx = index();
-    idx.photos.borrow_mut().retain(|_, p| p.is_none());
-    idx.local.borrow_mut().retain(|_, s| matches!(s, Slot::Pending));
-    idx.online.borrow_mut().retain(|_, s| matches!(s, Slot::Pending));
-    idx.bimi.borrow_mut().retain(|_, s| matches!(s, Slot::Pending));
-    idx.avatars.borrow_mut().retain(|b| b.avatar.upgrade().is_some());
-}
-
 pub fn set_junk_shown(junk: bool) {
     OFFLINE.set(junk);
 }
@@ -543,45 +527,6 @@ pub fn known(email: &str) -> Option<bool> {
         return Some(true);
     }
     idx.ready.get().then_some(false)
-}
-
-/// The contact's name and image for `email`, for a notification icon:
-/// the address book, OpenPGP and Face, then the online sources turned on.
-pub async fn lookup(email: &str, verified: Option<&str>) -> (Option<String>, Option<gdk::Texture>) {
-    let idx = index();
-    let email = email.trim().to_lowercase();
-    let name = idx.card(&email).and_then(|c| c.name);
-    let mut image = idx.local_image(&email).await;
-    if image.is_none() {
-        image = glib::future_with_timeout(NOTE_WAIT, note_online_image(&email, verified)).await.ok().flatten();
-    }
-    (name, image)
-}
-
-/// The brand logo for a message that passed DMARC for `verified`, else
-/// Libravatar or Gravatar, as turned on.
-async fn note_online_image(email: &str, verified: Option<&str>) -> Option<gdk::Texture> {
-    if let Some(domain) = verified.filter(|_| Settings::get().avatar_bimi)
-        && let Some(logo) = Index::bimi_logo(domain).await
-        && let Some(t) = raster(&logo, NOTE_SIZE)
-    {
-        return Some(t);
-    }
-    Index::online_image(email).await
-}
-
-/// `p` drawn into a `size` square bitmap, for notifications, which take
-/// images, not SVG.
-fn raster(p: &gdk::Paintable, size: i32) -> Option<gdk::Texture> {
-    let snapshot = gtk::Snapshot::new();
-    p.snapshot(&snapshot, size as f64, size as f64);
-    let node = snapshot.to_node()?;
-    let renderer = gtk::gsk::CairoRenderer::new();
-    renderer.realize(None::<&gdk::Surface>).ok()?;
-    let bounds = gtk::graphene::Rect::new(0.0, 0.0, size as f32, size as f32);
-    let texture = renderer.render_texture(&node, Some(&bounds));
-    renderer.unrealize();
-    Some(texture)
 }
 
 async fn fetch(contacts: Contacts, book: String, uid: String) -> Option<gdk::Texture> {

@@ -359,6 +359,19 @@ fn load_file() -> glib::KeyFile {
     kf
 }
 
+/// `rule` as text, for passing it between processes.
+pub fn to_text(rule: &Rule) -> String {
+    let kf = glib::KeyFile::new();
+    write_rule(&kf, "rule", rule);
+    kf.to_data().to_string()
+}
+
+pub fn from_text(text: &str) -> Option<Rule> {
+    let kf = glib::KeyFile::new();
+    kf.load_from_data(text, glib::KeyFileFlags::NONE).ok()?;
+    kf.has_group("rule").then(|| read_rule(&kf, "rule"))
+}
+
 /// The account's rules, in order.
 pub fn load(account: &str) -> Vec<Rule> {
     let kf = load_file();

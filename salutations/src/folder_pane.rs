@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
-use salutations_core::camel::{self, prelude::*};
+use crate::mail::camel;
 
 use crate::folder_object::{FolderObject, SyncState};
 

@@ -495,14 +495,14 @@ impl Window {
     /// Appends `out` to the account's Drafts and deletes the copy `old`.
     /// Returns the new copy's UID when it can be found.
     pub(super) async fn store_draft(self: &Rc<Self>, account: &Rc<AccountCtl>, old: Option<String>, out: &Outgoing) -> Result<Option<String>, String> {
-        let drafts = account.special.borrow().as_ref().and_then(|s| s.drafts.clone());
+        let drafts = account.eng.special().as_ref().and_then(|s| s.drafts.clone());
         let drafts = drafts.ok_or("this account has no Drafts folder")?;
-        let store = account.store.borrow().clone().ok_or("the account is not connected")?;
+        let store = account.eng.store().ok_or("the account is not connected")?;
         let folder = self.session.folder_future(&store, &drafts).await.map_err(|e| e.message().to_string())?;
         let keys = self.composer_keys(account);
-        let msg = send::draft(&self.session, out, keys).await.map_err(|e| e.message().to_string())?;
+        let msg = send::prepare(self.gpg.clone(), out, keys, true).await.map_err(|e| e.message().to_string())?;
         let before: HashSet<String> = folder.uids().into_iter().map(|u| u.to_string()).collect();
-        let uid = send::append(&folder, &msg, send::DRAFT_FLAGS).await.map_err(|e| e.message().to_string())?;
+        let uid = folder.append(&msg, send::DRAFT_FLAGS).await.map_err(|e| e.message().to_string())?;
         let uid = match uid {
             Some(u) => Some(u),
             None => {
@@ -568,10 +568,15 @@ impl Window {
         self.window.connect_close_request(move |win| {
             let Some(this) = weak.upgrade() else { return glib::Propagation::Proceed };
             let draft = this.composer.is_dirty() && this.compose.borrow().is_some();
-            if win.hides_on_close() || (!draft && this.queue.borrow().is_empty()) {
+            if !draft && this.queue.borrow().is_empty() {
                 return glib::Propagation::Proceed;
             }
             if !saving.replace(true) {
+                // Running in background, the window goes at once and the
+                // work finishes unseen, as quitting with it hidden does.
+                if Settings::get().run_in_background {
+                    win.set_visible(false);
+                }
                 let (win, saving) = (win.clone(), saving.clone());
                 glib::spawn_future_local(async move {
                     this.save_before_exit().await;
@@ -599,8 +604,8 @@ impl Window {
     }
 
     async fn delete_draft(self: &Rc<Self>, account: &Rc<AccountCtl>, uid: String) {
-        let drafts = account.special.borrow().as_ref().and_then(|s| s.drafts.clone());
-        let store = account.store.borrow().clone();
+        let drafts = account.eng.special().as_ref().and_then(|s| s.drafts.clone());
+        let store = account.eng.store();
         let (Some(drafts), Some(store)) = (drafts, store) else { return };
         if let Ok(folder) = self.session.folder_future(&store, &drafts).await {
             let t = Target { account: account.clone(), folder, uids: vec![uid], thread: false };
@@ -767,7 +772,7 @@ impl Window {
         let this = self.clone();
         glib::spawn_future_local(async move {
             let keys = this.composer_keys(&account);
-            let result = send::send(&this.session, &account.account, &out, keys).await;
+            let result = remote::send_message(&this.gpg, &account.account, &out, keys).await;
             this.composer.set_sending(false);
             let sent = match result {
                 Ok(m) => m,
@@ -818,8 +823,8 @@ impl Window {
     /// then Archive, then the other folders but Drafts, Sent, Junk and
     /// Trash) and marks it as `kind` answered it.
     fn mark_original(self: &Rc<Self>, account: &Rc<AccountCtl>, id: String, kind: Kind) {
-        let Some(store) = account.store.borrow().clone() else { return };
-        let special = account.special.borrow().clone().unwrap_or_default();
+        let Some(store) = account.eng.store() else { return };
+        let special = account.eng.special().unwrap_or_default();
         let skip: Vec<String> = [&special.drafts, &special.sent, &special.junk, &special.trash].into_iter().flatten().cloned().collect();
         let mut names: Vec<String> = vec!["INBOX".into()];
         names.extend(special.archive.clone());
@@ -860,11 +865,11 @@ impl Window {
 
     /// Appends a sent message to the account's Sent folder.
     pub(super) async fn file_sent(self: &Rc<Self>, account: &Rc<AccountCtl>, msg: &camel::MimeMessage) {
-        let sent = account.special.borrow().as_ref().and_then(|s| s.sent.clone());
-        let store = account.store.borrow().clone();
+        let sent = account.eng.special().as_ref().and_then(|s| s.sent.clone());
+        let store = account.eng.store();
         let (Some(sent), Some(store)) = (sent, store) else { return };
         let result = match self.session.folder_future(&store, &sent).await {
-            Ok(folder) => send::append(&folder, msg, SEEN).await.map(|_| ()),
+            Ok(folder) => folder.append(msg, SEEN).await.map(|_| ()),
             Err(e) => Err(e),
         };
         if let Err(e) = result {

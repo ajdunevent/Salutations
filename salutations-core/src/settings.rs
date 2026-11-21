@@ -257,7 +257,7 @@ impl Default for Settings {
     }
 }
 
-fn path() -> PathBuf {
+pub fn path() -> PathBuf {
     glib::user_config_dir().join("salutations").join("settings.ini")
 }
 
@@ -265,6 +265,12 @@ static CURRENT: Mutex<Option<Settings>> = Mutex::new(None);
 
 impl Settings {
     /// The settings as last loaded or saved in this process.
+    /// Reads the file again on the next `get`, after another process
+    /// changed it.
+    pub fn reload() {
+        *CURRENT.lock().unwrap() = None;
+    }
+
     pub fn get() -> Settings {
         let mut cur = CURRENT.lock().unwrap();
         cur.get_or_insert_with(Self::load).clone()

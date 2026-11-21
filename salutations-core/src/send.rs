@@ -68,16 +68,22 @@ fn invalid(message: &str) -> glib::Error {
 /// message without recipients or with an address that does not parse
 /// ([`is_invalid`]).
 pub async fn send(session: &Session, account: &Account, out: &Outgoing, keys: Option<Keys>) -> Result<camel::MimeMessage, glib::Error> {
+    let recipients = recipients(out)?;
+    // Signing and encryption failures (a missing key, a cancelled
+    // passphrase) are the message's problem, not the server's.
+    let msg = prepare(crate::crypto::context(session), out, keys, false).await.map_err(|e| invalid(e.message()))?;
+    transmit(session, account, &msg, out.from_address(), recipients).await?;
+    Ok(msg)
+}
+
+/// The recipients of `out`, or why it cannot be sent as written.
+pub fn recipients(out: &Outgoing) -> Result<camel::InternetAddress, glib::Error> {
     let recipients = out.recipients().map_err(|e| invalid(&format!("“{}” is not a valid address", e.0)))?;
     if recipients.length() == 0 {
         return Err(invalid("Add at least one recipient"));
     }
     out.headers(false).map_err(|e| invalid(&format!("“{}” is not a valid address", e.0)))?;
-    // Signing and encryption failures (a missing key, a cancelled
-    // passphrase) are the message's problem, not the server's.
-    let msg = prepare(session, out, keys, false).await.map_err(|e| invalid(e.message()))?;
-    transmit(session, account, &msg, out.from_address(), recipients).await?;
-    Ok(msg)
+    Ok(recipients)
 }
 
 /// The account's key and how it is shared, for [`send`] and [`draft`].
@@ -97,11 +103,10 @@ unsafe impl<T> Send for Handoff<T> {}
 /// The message to send, or (`draft`) to save in Drafts, with the key
 /// shared and the content signed and encrypted as `out` asks. A draft is
 /// never signed; with Encrypt on it is encrypted to the sender's own key.
-async fn prepare(session: &Session, out: &Outgoing, keys: Option<Keys>, draft: bool) -> Result<camel::MimeMessage, glib::Error> {
+pub async fn prepare(ctx: camel::GpgContext, out: &Outgoing, keys: Option<Keys>, draft: bool) -> Result<camel::MimeMessage, glib::Error> {
     let Some(keys) = keys else {
         return out.build(draft).map_err(|e| invalid(&e.0));
     };
-    let ctx = crate::crypto::context(session);
     let job = Handoff((out.clone(), ctx));
     gio::spawn_blocking(move || {
         let Handoff((mut out, ctx)) = job;
@@ -136,10 +141,10 @@ async fn prepare(session: &Session, out: &Outgoing, keys: Option<Keys>, draft: b
 
 /// The message to save in Drafts; see [`prepare`].
 pub async fn draft(session: &Session, out: &Outgoing, keys: Option<Keys>) -> Result<camel::MimeMessage, glib::Error> {
-    prepare(session, out, keys, true).await
+    prepare(crate::crypto::context(session), out, keys, true).await
 }
 
-async fn transmit(
+pub async fn transmit(
     session: &Session,
     account: &Account,
     msg: &camel::MimeMessage,

@@ -70,6 +70,15 @@
   </screenshots>
 
   <releases>
+    <release version="0.3.0" date="2026-11-21">
+      <description>
+        <p>Far less memory in the background.</p>
+        <ul>
+          <li>The window is now a separate process that ends when it closes; syncing, notifications and rules carry on in a small background process</li>
+          <li>Opening the window from the background takes a moment longer, since it starts afresh</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.1" date="2026-11-19">
       <description>
         <p>Less memory in the background.</p>

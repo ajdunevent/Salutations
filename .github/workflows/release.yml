@@ -26,6 +26,7 @@ jobs:
       version-files: |
         salutations/Cargo.toml: version = "(.+)"
         salutations-core/Cargo.toml: version = "(.+)"
+        salutations-daemon/Cargo.toml: version = "(.+)"
       # Ponds updated at once after a release, one owner/repository per line. Without the
       # POND_TOKEN secret they pick the release up at their next scheduled check.
       ponds: |

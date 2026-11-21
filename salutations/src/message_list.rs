@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use salutations_core::camel::{self, prelude::*};
+use crate::mail::camel::{self, prelude::*};
 
 use crate::message_object::{MessageObject, Person, RowData, RowKind};
 
@@ -1718,15 +1718,7 @@ unsafe impl Send for SendFolder {}
 
 /// The first `name` header of message `uid` from the offline copy only.
 fn cached_header(folder: &camel::Folder, uid: &str, name: &str) -> Option<String> {
-    use glib::translate::*;
-    let msg: Option<camel::MimeMessage> = unsafe {
-        from_glib_full(camel::ffi::camel_folder_get_message_cached(
-            folder.to_glib_none().0,
-            uid.to_glib_none().0,
-            std::ptr::null_mut(),
-        ))
-    };
-    msg?.header(name).map(|h| h.to_string())
+    folder.cached_header(uid, name)
 }
 
 /// The avatar in a row widget.

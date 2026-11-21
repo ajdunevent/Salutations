@@ -1,11 +1,10 @@
-//! Running with the window closed, and starting at login.
+//! Starting at login. Running with the window closed is the background
+//! process's; it follows the setting from the settings file.
 //!
 //! Outside a sandbox, autostart is a desktop file in
 //! `~/.config/autostart`; inside Flatpak the Background portal writes it.
 //! Either way it runs Salutations with `--background`, which starts it
 //! without a window.
-
-use std::cell::RefCell;
 
 use gtk::prelude::*;
 use gtk::{gio, glib};
@@ -14,36 +13,8 @@ use salutations_core::{APP_ID, Settings};
 /// Starts without showing the window.
 pub const FLAG: &str = "--background";
 
-thread_local! {
-    static HOLD: RefCell<Option<gio::ApplicationHoldGuard>> = const { RefCell::new(None) };
-    static WINDOW: RefCell<Option<glib::WeakRef<gtk::Window>>> = const { RefCell::new(None) };
-}
-
 fn sandboxed() -> bool {
     std::path::Path::new("/.flatpak-info").exists()
-}
-
-/// The window that hides instead of closing while running in background.
-pub fn set_window(window: &impl IsA<gtk::Window>) {
-    WINDOW.with(|w| *w.borrow_mut() = Some(window.upcast_ref::<gtk::Window>().downgrade()));
-}
-
-/// Applies the current settings: holds the application and keeps the
-/// window on close.
-pub fn apply() {
-    let settings = Settings::get();
-    let run = settings.run_in_background;
-    HOLD.with(|h| {
-        let mut h = h.borrow_mut();
-        match (run, h.is_some()) {
-            (true, false) => *h = gio::Application::default().map(|a| a.hold()),
-            (false, true) => *h = None,
-            _ => {}
-        }
-    });
-    if let Some(w) = WINDOW.with(|w| w.borrow().as_ref().and_then(|w| w.upgrade())) {
-        w.set_hide_on_close(run);
-    }
 }
 
 /// Writes or removes the autostart entry; called when either switch

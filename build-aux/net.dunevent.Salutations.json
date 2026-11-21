@@ -150,8 +150,9 @@
                 }
             },
             "build-commands": [
-                "cargo --offline build --release -p salutations",
+                "cargo --offline build --release -p salutations -p salutations-daemon",
                 "install -Dm755 target/release/salutations /app/bin/salutations",
+                "install -Dm755 target/release/salutations-window /app/bin/salutations-window",
                 "install -Dm644 salutations/data/net.dunevent.Salutations.desktop /app/share/applications/net.dunevent.Salutations.desktop",
                 "install -Dm644 salutations/data/net.dunevent.Salutations.metainfo.xml /app/share/metainfo/net.dunevent.Salutations.metainfo.xml",
                 "install -Dm644 salutations/data/icons/scalable/apps/net.dunevent.Salutations.svg /app/share/icons/hicolor/scalable/apps/net.dunevent.Salutations.svg",

@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use salutations_core::camel::{self, prelude::*};
+use crate::mail::camel;
 use salutations_core::edataserver::SourceRegistry;
 use salutations_core::offline::{self, Download, OfflineSync, Refresh, TimeUnit, Window as AgeWindow};
 use salutations_core::{Account, Settings};
@@ -496,7 +496,6 @@ pub fn show(
             a.set_active(false);
         }
         s(&|st: &mut Settings| st.run_in_background = on);
-        crate::background::apply();
         crate::background::apply_autostart();
     });
     let s = save.clone();
@@ -1280,13 +1279,13 @@ fn receiving_group(registry: &SourceRegistry, entry: AccountEntry, title: &str, 
                     folder_row.set_subtitle("Cannot be opened");
                     return;
                 };
-                check.set_active(inbox || offline::folder_synced(&folder));
+                check.set_active(inbox || folder.synced());
                 check.set_sensitive(!inbox);
                 if inbox {
                     folder_row.set_subtitle("Required");
                 }
                 check.connect_active_notify(move |c| {
-                    offline::set_folder_synced(&folder, c.is_active());
+                    folder.set_synced(c.is_active());
                     on_account(&uid, AccountChange::Offline);
                 });
             });

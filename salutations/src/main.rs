@@ -13,11 +13,12 @@ mod manage;
 mod message_list;
 mod message_object;
 mod overflow_box;
-mod notify;
+mod mail;
 mod online_accounts;
 mod preferences;
 mod people;
 mod pull_refresh;
+mod remote;
 mod recipients;
 mod row_holder;
 mod rule_editor;
@@ -31,25 +32,24 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use salutations_core::camel::prelude::*;
+use salutations_core::APP_ID;
 use salutations_core::edataserver::SourceRegistry;
-use salutations_core::{APP_ID, Session};
 
+/// The window process, started by the background process (the
+/// `salutations` command), which it talks to over a private connection.
 fn main() -> glib::ExitCode {
     debug::init();
     gio::resources_register_include!("salutations.gresource").expect("bundled resources");
-    if let Err(e) = salutations_core::init() {
+    if let Err(e) = salutations_core::init_window() {
         eprintln!("Salutations cannot start: {e}");
         return glib::ExitCode::FAILURE;
     }
+    // The desktop matches the window to the app by this name.
+    glib::set_prgname(Some(APP_ID));
     let app = adw::Application::builder()
-        .application_id(APP_ID)
         .resource_base_path("/net/dunevent/Salutations")
-        .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
-    // Autostart passes --background: the first activation keeps the
-    // window hidden.
-    let hidden_start = std::rc::Rc::new(std::cell::Cell::new(false));
     let main: Rc<RefCell<Option<Rc<window::Window>>>> = Rc::default();
     app.connect_startup(|app| {
         viewer::register_cid_scheme();
@@ -57,67 +57,36 @@ fn main() -> glib::ExitCode {
         clock::init();
         install_app_actions(app);
     });
-    let (m, hidden_start_a) = (main.clone(), hidden_start.clone());
+    let m = main.clone();
     app.connect_activate(move |app| {
         if let Some(w) = m.borrow().as_ref() {
             w.window.present();
             return;
         }
-        let registry = match SourceRegistry::new_sync(None::<&gio::Cancellable>) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("Cannot reach the Evolution Data Server account registry: {e}");
-                app.quit();
+        // Held until the window exists, which needs the connection first.
+        let hold = app.hold();
+        let (app, m) = (app.clone(), m.clone());
+        glib::spawn_future_local(async move {
+            let _hold = hold;
+            if let Err(e) = remote::connect().await {
+                eprintln!("Salutations: {e}");
                 return;
             }
-        };
-        let session = Session::new(&registry, &salutations_core::data_dir(), &salutations_core::cache_dir());
-        session.set_online(true);
-        let w = window::Window::new(app, registry, session);
-        background::set_window(&w.window);
-        background::apply();
-        w.watch_background();
-        let hidden = hidden_start_a.replace(false) && salutations_core::Settings::get().run_in_background;
-        if hidden {
-            w.shed();
-        } else {
+            let registry = match SourceRegistry::new_future().await {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("Cannot reach the Evolution Data Server account registry: {e}");
+                    return;
+                }
+            };
+            let w = window::Window::new(&app, registry);
             w.window.present();
             default_app::first_run(&w.window);
-        }
-        *m.borrow_mut() = Some(w);
-    });
-    // A second launch hands its arguments to the running instance:
-    // --background (autostart), --compose (the desktop's New message
-    // action), mailto: links, and .eml files to import.
-    let (m, hidden) = (main.clone(), hidden_start.clone());
-    app.connect_command_line(move |app, cmd| {
-        let mut compose = false;
-        let mut mailto = None;
-        let mut files = Vec::new();
-        for arg in cmd.arguments().iter().skip(1) {
-            let text = arg.to_string_lossy();
-            if text == background::FLAG {
-                hidden.set(m.borrow().is_none());
-            } else if text == "--compose" {
-                compose = true;
-            } else if let Some(link) = salutations_core::mailto::parse(&text) {
-                mailto.get_or_insert(link);
-            } else if !text.starts_with("--") {
-                files.push(cmd.create_file_for_arg(arg));
-            }
-        }
-        app.activate();
-        let Some(w) = m.borrow().clone() else { return glib::ExitCode::SUCCESS };
-        if mailto.is_some() || compose {
-            w.compose_external(mailto);
-        }
-        if !files.is_empty() {
-            w.import_files(files, None);
-        }
-        glib::ExitCode::SUCCESS
+            *m.borrow_mut() = Some(w);
+        });
     });
     // Quit waits for an unsaved draft to reach the server, and for queued
-    // moves unless the user quits anyway.
+    // moves unless the user quits anyway; it also ends background running.
     let quit = gio::SimpleAction::new("quit", None);
     let (a, m) = (app.clone(), main.clone());
     quit.connect_activate(move |_, _| {
@@ -127,34 +96,12 @@ fn main() -> glib::ExitCode {
                 w.save_before_exit().await;
                 w.finish_queue().await;
             }
+            let _ = remote::call("quit", salutations_core::ipc::unit()).await;
             a.quit();
         });
     });
     app.add_action(&quit);
-    let m = main.clone();
-    app.connect_shutdown(move |_| {
-        if let Some(w) = m.borrow().as_ref() {
-            w.shutdown();
-        }
-        stop_sandbox_gnupg();
-    });
     app.run()
-}
-
-/// In the Flatpak, gpg starts a gpg-agent and scdaemon of its own inside
-/// the sandbox, and they outlive Salutations, keeping the sandbox running.
-/// They serve only this sandbox, so they are stopped on quit. Outside the
-/// Flatpak the agent is the user's, shared with everything else, and is
-/// left alone.
-fn stop_sandbox_gnupg() {
-    if !std::path::Path::new("/.flatpak-info").exists() {
-        return;
-    }
-    let _ = std::process::Command::new("gpgconf")
-        .args(["--kill", "all"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
 }
 
 /// The metainfo in the resource bundle, which the About dialog reads.

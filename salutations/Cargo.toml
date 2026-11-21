@@ -1,11 +1,15 @@
 [package]
 name = "salutations"
-version = "0.2.1"
+version = "0.3.0"
 description = "A small GTK4/libadwaita IMAP mail client for GNOME Online Accounts"
 license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish = false
+
+[[bin]]
+name = "salutations-window"
+path = "src/main.rs"
 
 [dependencies]
 salutations-core = { path = "../salutations-core" }

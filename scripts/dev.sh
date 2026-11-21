@@ -153,11 +153,12 @@ build_app() {
         --env=CARGO_TARGET_DIR="$PWD/$state/target"
         --env=CARGO_TERM_COLOR=always "$state/build")
     echo "==> Compiling $arch ($profile)"
-    "${sdk_shell[@]}" cargo build --profile "$profile" --locked -p "$MODULE"
+    "${sdk_shell[@]}" cargo build --profile "$profile" --locked -p "$MODULE" -p "$MODULE-daemon"
     # shellcheck disable=SC2016 # $1 expands inside the sandbox.
     "${sdk_shell[@]}" sh -c '
         set -e
         install -Dm755 "$1/salutations" /app/bin/salutations
+        install -Dm755 "$1/salutations-window" /app/bin/salutations-window
         install -Dm644 salutations/data/net.dunevent.Salutations.desktop /app/share/applications/net.dunevent.Salutations.desktop
         install -Dm644 salutations/data/net.dunevent.Salutations.metainfo.xml /app/share/metainfo/net.dunevent.Salutations.metainfo.xml
         install -Dm644 salutations/data/icons/scalable/apps/net.dunevent.Salutations.svg /app/share/icons/hicolor/scalable/apps/net.dunevent.Salutations.svg
@@ -189,7 +190,7 @@ make_bundle() {
     # flatpak-builder moves the libraries' debug info to /app/lib/debug for
     # a separate Debug extension, which a bundle does not have.
     rm -rf "$finish"/files/lib/debug
-    flatpak build "$finish" strip --strip-debug /app/bin/salutations
+    flatpak build "$finish" strip --strip-debug /app/bin/salutations /app/bin/salutations-window
 
     local finish_args
     mapfile -t finish_args < <(manifest_value finish-args)

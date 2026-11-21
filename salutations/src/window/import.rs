@@ -37,7 +37,7 @@ impl Window {
         glib::spawn_future_local(async move {
             let Some(choice) = manage::pick_import_folder(&this.window, &what, choices, folder).await else { return };
             let Some(ctl) = this.accounts.borrow().iter().find(|c| c.account.uid == choice.account).cloned() else { return };
-            let folder = match this.store_for(&ctl) {
+            let folder = match this.engine.store_for(&ctl.eng) {
                 Ok(store) => this.session.folder_future(&store, &choice.full_name).await,
                 Err(e) => Err(e),
             };
@@ -101,6 +101,6 @@ async fn import_one(folder: &camel::Folder, file: &gio::File) -> Result<bool, St
             return Ok(false);
         }
     }
-    salutations_core::send::append(folder, &msg, SEEN).await.map_err(|e| e.message().to_string())?;
+    folder.append(&msg, SEEN).await.map_err(|e| e.message().to_string())?;
     Ok(true)
 }

@@ -14,9 +14,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use gtk::prelude::*;
-use gtk::{cairo, gio, glib};
+use gio::prelude::*;
 use salutations_core::APP_ID;
+
+use crate::images::Picture;
 
 const BUS: &str = "org.freedesktop.Notifications";
 const PATH: &str = "/org/freedesktop/Notifications";
@@ -44,7 +45,7 @@ pub struct MessageNote<'a> {
     pub sender: &'a str,
     /// The address book's name for the sender, for the icon's initials.
     pub contact_name: Option<String>,
-    pub photo: Option<gtk::gdk::Texture>,
+    pub photo: Option<Picture>,
     pub subject: &'a str,
     pub preview: &'a str,
     pub sound: bool,
@@ -361,7 +362,7 @@ fn initials(text: &str) -> String {
 
 /// The avatar the list shows for `name`, or `photo`, as `image-data`.
 /// AdwAvatar can only render inside a realized window, so it is drawn here.
-fn avatar(name: &str, photo: Option<&gtk::gdk::Texture>) -> glib::Variant {
+fn avatar(name: &str, photo: Option<&Picture>) -> glib::Variant {
     const SIZE: i32 = 64;
     let (fg, top, bottom) = COLORS[(str_hash(name) % 14) as usize];
     let rgb = |c: u32| (((c >> 16) & 0xff) as f64 / 255.0, ((c >> 8) & 0xff) as f64 / 255.0, (c & 0xff) as f64 / 255.0);
@@ -403,7 +404,7 @@ fn avatar(name: &str, photo: Option<&gtk::gdk::Texture>) -> glib::Variant {
             let i = (y * stride + x * 4) as usize;
             let px = u32::from_ne_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]);
             let a = (px >> 24) & 0xff;
-            let un = |c: u32| if a == 0 { 0 } else { ((c * 255 + a / 2) / a).min(255) as u8 };
+            let un = |c: u32| (c * 255 + a / 2).checked_div(a).map_or(0, |v| v.min(255) as u8);
             rgba.extend_from_slice(&[un((px >> 16) & 0xff), un((px >> 8) & 0xff), un(px & 0xff), a as u8]);
         }
     }
@@ -420,21 +421,27 @@ fn avatar(name: &str, photo: Option<&gtk::gdk::Texture>) -> glib::Variant {
 }
 
 /// Paints `photo` over the avatar circle at `size`, clipped to it.
-fn paint_photo(cr: &cairo::Context, photo: &gtk::gdk::Texture, size: f64) {
-    let (w, h) = (photo.width(), photo.height());
-    let Ok(mut surface) = cairo::ImageSurface::create(cairo::Format::ARgb32, w, h) else { return };
+fn paint_photo(cr: &cairo::Context, photo: &Picture, size: f64) {
+    let side = photo.side as i32;
+    let Ok(mut surface) = cairo::ImageSurface::create(cairo::Format::ARgb32, side, side) else { return };
     let stride = surface.stride() as usize;
     {
         let Ok(mut data) = surface.data() else { return };
-        // The default download format is Cairo's ARGB32.
-        photo.download(&mut data, stride);
+        for (i, px) in photo.rgba.as_chunks::<4>().0.iter().enumerate() {
+            let (y, x) = (i / photo.side, i % photo.side);
+            let a = px[3] as u32;
+            let pre = |c: u8| (c as u32 * a + 127) / 255;
+            let v = (a << 24) | (pre(px[0]) << 16) | (pre(px[1]) << 8) | pre(px[2]);
+            let o = y * stride + x * 4;
+            data[o..o + 4].copy_from_slice(&v.to_ne_bytes());
+        }
     }
     surface.mark_dirty();
     let _ = cr.save();
     let half = size / 2.0;
     cr.arc(half, half, half, 0.0, std::f64::consts::TAU);
     cr.clip();
-    cr.scale(size / w as f64, size / h as f64);
+    cr.scale(size / side as f64, size / side as f64);
     let _ = cr.set_source_surface(&surface, 0.0, 0.0);
     let _ = cr.paint();
     let _ = cr.restore();

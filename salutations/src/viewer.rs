@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use salutations_core::camel::{self, prelude::*};
+use crate::mail::camel::{self, prelude::*};
 use salutations_core::links::{self, Link};
 use salutations_core::remote;
 use salutations_core::render::{self, Address, Rendered};
@@ -791,14 +791,6 @@ impl Viewer {
             page.set_title(&title);
         }
         self.widget.set_visible_child_name("selected");
-    }
-
-    /// Clears the view and ends the web view's web process, which keeps
-    /// its memory otherwise; the next message starts a new one.
-    pub fn release(&self) {
-        self.clear();
-        *self.painted.borrow_mut() = None;
-        self.web.terminate_web_process();
     }
 
     pub fn clear(&self) {
