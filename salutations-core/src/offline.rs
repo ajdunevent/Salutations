@@ -4,7 +4,7 @@
 //!
 //! "All messages" is the Offline extension's stay-synchronized. With
 //! "Specific folders", each folder's own offline-sync state decides, and
-//! INBOX is always on. The age window is Camel's limit-by-age, limit-unit
+//! INBOX is always on. The age window is Camel's limit-by-age, limit-unit,
 //! and limit-value, kept in the source's backend extension.
 
 use camel::prelude::*;
@@ -434,8 +434,8 @@ pub fn hold_push(registry: &SourceRegistry, account: &crate::Account, hold: bool
     }
 }
 
-/// The account's server, port and whether it uses TLS from the start
-/// (`Some(true)`), STARTTLS (`Some(false)`) or nothing (`None`).
+/// The account's server, port, and whether it uses TLS from the start
+/// (`Some(true)`), STARTTLS (`Some(false)`), or nothing (`None`).
 pub fn server(registry: &SourceRegistry, account: &crate::Account) -> Option<(String, u16, Option<bool>)> {
     let source = source(registry, &account.uid).ok()?;
     let auth = extension(&source, edataserver::E_SOURCE_EXTENSION_AUTHENTICATION);

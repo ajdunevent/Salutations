@@ -63,7 +63,7 @@ struct Index {
     photos: RefCell<HashMap<Key, Option<Option<gdk::Texture>>>>,
     avatars: RefCell<Vec<Bound>>,
     views: RefCell<Vec<contacts::View>>,
-    /// By lowercased address: the address book, OpenPGP and Face.
+    /// By lowercased address: the address book, OpenPGP, and Face.
     local: RefCell<HashMap<String, Slot<gdk::Texture>>>,
     /// By lowercased address: Libravatar and Gravatar.
     online: RefCell<HashMap<String, Slot<gdk::Texture>>>,

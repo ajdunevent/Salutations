@@ -1,5 +1,5 @@
 //! The window's side of the private connection to the background process,
-//! which owns the accounts. Folders, stores, message summaries and the
+//! which owns the accounts. Folders, stores, message summaries, and the
 //! session are stand-ins with the methods the window uses from Camel's,
 //! answered by the background process; messages come as their source and
 //! are parsed here with Camel's MIME parser.

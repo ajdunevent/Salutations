@@ -16,7 +16,7 @@ pub struct FolderNode {
 }
 
 impl FolderInfo {
-    /// Copies this node, its siblings and all their children.
+    /// Copies this node, its siblings, and all their children.
     pub fn to_nodes(&self) -> Vec<FolderNode> {
         unsafe { nodes(self.as_ptr()) }
     }

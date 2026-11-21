@@ -1,4 +1,4 @@
-//! OpenPGP: PGP/MIME signing, encryption, decryption and verification
+//! OpenPGP: PGP/MIME signing, encryption, decryption, and verification
 //! through Camel's GnuPG context, the user's secret keys, key lookup by WKD
 //! and keyserver, and keys carried in messages (Autocrypt headers and
 //! `application/pgp-keys` attachments). Functions ending in `_sync` run
@@ -38,7 +38,7 @@ pub fn key_file_name(email: &str) -> String {
 }
 
 /// Secret keys in the user's keyring able to sign, without expired,
-/// revoked or disabled ones. Runs gpg; blocks.
+/// revoked, or disabled ones. Runs gpg; blocks.
 pub fn secret_keys_sync() -> Vec<SecretKey> {
     list_secret_keys_sync().unwrap_or_default()
 }
@@ -408,7 +408,7 @@ fn inline_sync(ctx: &GpgContext, part: &MimePart) -> Option<(MimePart, Protectio
     }
 }
 
-/// The text of a clearsigned block without its armor lines, signature and
+/// The text of a clearsigned block without its armor lines, signature, and
 /// dash-escaping.
 fn strip_clearsign(text: &str) -> String {
     let mut out = Vec::new();

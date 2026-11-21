@@ -1,5 +1,5 @@
 //! The search bar and its results. The window runs the searches; this
-//! module shows the query, the scope and the hits.
+//! module shows the query, the scope, and the hits.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;

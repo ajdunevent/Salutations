@@ -1,5 +1,5 @@
 //! Pictures for notifications without GTK: PNG through cairo, JPEG through
-//! libturbojpeg and SVG (BIMI logos) through librsvg, the decoders GTK uses
+//! libturbojpeg, and SVG (BIMI logos) through librsvg, the decoders GTK uses
 //! from the same runtime. Everything ends as a square of RGBA pixels.
 
 use std::ffi::{c_int, c_ulong, c_void};

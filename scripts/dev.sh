@@ -2,7 +2,7 @@
 # Incremental Flatpak builds on the host, for this machine's architecture,
 # the other one (x86_64 or aarch64), or both.
 #
-# Prompts for the architecture(s), what to produce and the Cargo profile,
+# Prompts for the architecture(s), what to produce, and the Cargo profile,
 # then writes .flatpak bundles to dist/ and/or installs the build for the
 # current user. The bundled libraries (libical, GNOME Online Accounts'
 # client library, evolution-data-server, libspelling) are built once per

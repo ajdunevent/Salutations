@@ -130,7 +130,7 @@ pub struct Changes {
 #[derive(Debug, Clone, Default, glib::Variant)]
 pub struct AccountInfo {
     pub uid: String,
-    /// "idle", "syncing", "offline" or "error".
+    /// "idle", "syncing", "offline", or "error".
     pub state: String,
     pub message: String,
     pub sign_in_failed: bool,

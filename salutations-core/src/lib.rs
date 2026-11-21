@@ -1,5 +1,5 @@
 //! Mail engine of Salutations. Camel does the IMAP and SMTP work; this
-//! crate holds the session, account discovery and credential glue. It
+//! crate holds the session, account discovery, and credential glue. It
 //! must not depend on GTK so it can move into a separate daemon.
 
 mod accounts;
@@ -42,7 +42,7 @@ pub use edataserver;
 
 pub const APP_ID: &str = "net.dunevent.Salutations";
 
-/// Camel's state: account folders, summaries and the NSS certificate
+/// Camel's state: account folders, summaries, and the NSS certificate
 /// database.
 pub fn data_dir() -> PathBuf {
     glib::user_data_dir().join("salutations")

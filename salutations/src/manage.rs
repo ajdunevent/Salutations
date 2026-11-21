@@ -114,7 +114,7 @@ pub async fn pick_import_folder(
     let (tx, rx) = futures_channel::oneshot::channel::<Option<FolderChoice>>();
     let tx = std::rc::Rc::new(std::cell::RefCell::new(Some(tx)));
     let list = folder_list(&folders, gtk::SelectionMode::Single);
-    // A click only chooses; Import, a double click or Enter imports.
+    // A click only chooses; Import, a double click, or Enter imports.
     list.set_activate_on_single_click(false);
     let scrolled = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)

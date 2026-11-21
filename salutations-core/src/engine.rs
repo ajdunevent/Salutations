@@ -1,6 +1,6 @@
 //! Everything that keeps running while Salutations is open: accounts,
 //! their stores and syncing, push checks, retries, Power Saver and metered
-//! connections, offline downloads and pruning. The window reads its state
+//! connections, and offline downloads and pruning. The window reads its state
 //! and hears about changes through `Event`s.
 
 use std::cell::{Cell, RefCell};
@@ -39,7 +39,7 @@ pub enum SyncState {
 
 #[derive(Debug, Clone)]
 pub enum Event {
-    /// Accounts were added, removed, renamed or reordered; see
+    /// Accounts were added, removed, renamed, or reordered; see
     /// `Engine::accounts`.
     Accounts,
     SyncState(String),
@@ -160,8 +160,8 @@ impl Engine {
         })
     }
 
-    /// Loads the accounts, starts syncing them and follows the registry, the
-    /// network, sleep and Power Saver.
+    /// Loads the accounts, starts syncing them, and follows the registry, the
+    /// network, sleep, and Power Saver.
     pub fn start(self: &Rc<Self>) {
         self.load_accounts();
         // The registry emits on the main context it was created on.

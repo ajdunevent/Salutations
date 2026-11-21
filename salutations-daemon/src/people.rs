@@ -2,7 +2,7 @@
 //! address-book contact with an address, kept current by live views of the
 //! books, and the sender's picture from the same sources the window uses
 //! (address book, OpenPGP photo ID, Face header seen before, then BIMI,
-//! Libravatar and Gravatar as turned on). The window's disk cache of online
+//! Libravatar, and Gravatar as turned on). The window's disk cache of online
 //! pictures is shared.
 
 use std::cell::{Cell, RefCell};

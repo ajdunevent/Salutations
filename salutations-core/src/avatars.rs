@@ -1,5 +1,5 @@
 //! Avatar sources besides the address book: OpenPGP photo IDs, the `Face:`
-//! header, BIMI brand logos, Libravatar and Gravatar. Parsing and network
+//! header, BIMI brand logos, Libravatar, and Gravatar. Parsing and network
 //! requests only; choosing between sources and caching happen in the app.
 
 use gio::prelude::*;
@@ -24,7 +24,7 @@ pub fn face_png(value: &str) -> Option<Vec<u8>> {
 }
 
 /// The logo URL in a BIMI record ("v=BIMI1; l=https://…; a=…"); None for
-/// another version, an empty `l=` (the domain declines BIMI) or a non-HTTPS
+/// another version, an empty `l=` (the domain declines BIMI), or a non-HTTPS
 /// location.
 pub fn bimi_location(record: &str) -> Option<String> {
     let mut version = None;

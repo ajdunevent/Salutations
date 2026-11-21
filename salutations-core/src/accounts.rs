@@ -13,7 +13,7 @@ pub struct Account {
     /// The account's own address, from its mail identity.
     pub address: Option<String>,
     pub source: Source,
-    /// The mail identity source: name, address, aliases and the SMTP
+    /// The mail identity source: name, address, aliases, and the SMTP
     /// transport.
     pub identity: Option<Source>,
 }
@@ -138,7 +138,7 @@ pub fn mail_accounts(registry: &SourceRegistry) -> Vec<Account> {
 }
 
 /// Calls `f` whenever a mail account source is added, removed, enabled,
-/// disabled or changed. Signals arrive on the registry's main context.
+/// disabled, or changed. Signals arrive on the registry's main context.
 pub fn watch_mail_accounts<F: Fn(&SourceRegistry) + Send + Sync + 'static>(
     registry: &SourceRegistry,
     f: F,

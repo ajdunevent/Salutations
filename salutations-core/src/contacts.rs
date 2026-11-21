@@ -247,7 +247,7 @@ impl Contacts {
         *clients = Some(list);
     }
 
-    /// Contacts whose name, nickname or address starts with or contains
+    /// Contacts whose name, nickname, or address starts with or contains
     /// `query`; at most `limit`, one per address. Blocks.
     pub fn search_sync(&self, query: &str, limit: usize) -> Vec<Match> {
         let query = query.trim();

@@ -40,7 +40,7 @@ pub struct Rendered {
     /// support, and HTML that sets no colours. Other HTML gets a white
     /// canvas because its colours were chosen against one.
     pub follows_theme: bool,
-    /// The HTML refers to images, styles or fonts outside the message.
+    /// The HTML refers to images, styles, or fonts outside the message.
     pub has_remote: bool,
     /// Message-ID without angle brackets, for per-message choices that must
     /// survive a move to another folder.
@@ -134,7 +134,7 @@ fn find_body(part: &MimePart) -> Option<(MimePart, bool)> {
             .or(found.first())
             .cloned();
     }
-    // mixed, related, signed and the rest: the first displayable part.
+    // mixed, related, signed, and the rest: the first displayable part.
     parts.iter().find_map(find_body)
 }
 
@@ -497,8 +497,8 @@ static PREVIEW_TAG: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)</?[A-Za-z!][^>]*(?:>|$)").expect("valid preview tag pattern"));
 
 /// A message preview as plain text. Previews from the server or from an
-/// HTML-only message can hold markup, style sheets and entities, possibly
-/// cut off mid-tag. A `<` not followed by a letter, `/` or `!` is kept, so
+/// HTML-only message can hold markup, style sheets, and entities, possibly
+/// cut off mid-tag. A `<` not followed by a letter, `/`, or `!` is kept, so
 /// "a < b" in plain text survives.
 pub fn clean_preview(text: &str) -> String {
     let text = if text.contains('<') {

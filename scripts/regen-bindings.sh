@@ -1,5 +1,5 @@
 #!/bin/sh
-# Copies EDS .gir files from the system, patches them and regenerates the
+# Copies EDS .gir files from the system, patches them, and regenerates the
 # binding crates. GIR overrides the gir tool binary path.
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)

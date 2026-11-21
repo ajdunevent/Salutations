@@ -6,7 +6,7 @@
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Verification {
-    /// The DMARC result ("pass", "fail", "none" and so on), lowercased.
+    /// The DMARC result ("pass", "fail", "none", and so on), lowercased.
     pub dmarc: Option<String>,
     /// The From domain DMARC was evaluated for (`header.from`).
     pub from_domain: Option<String>,

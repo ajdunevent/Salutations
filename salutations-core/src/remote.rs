@@ -1,5 +1,5 @@
 //! Remote content of messages whose remote content is allowed: images,
-//! stylesheets and fonts. Salutations fetches them itself, without cookies,
+//! stylesheets, and fonts. Salutations fetches them itself, without cookies,
 //! into a size-limited cache, and the web view loads them from
 //! `x-salutations-remote:` URIs; it never reaches the network itself.
 //! Reopening a message therefore sends nothing, and content seen before
@@ -60,7 +60,7 @@ pub fn remote_url(uri: &str) -> Option<String> {
     glib::uri_unescape_string(rest, None::<&str>).map(|s| s.to_string())
 }
 
-/// Points image sources (`src`, `background`, `srcset`), stylesheet links
+/// Points image sources (`src`, `background`, `srcset`), stylesheet links,
 /// and CSS `url()` and `@import` at [`SCHEME`].
 pub fn rewrite(html: &str) -> String {
     let html = ATTR.replace_all(html, |c: &Captures| {
@@ -106,7 +106,7 @@ pub fn rewrite_css(css: &str, base: Option<&str>) -> String {
         let absolute = if raw.starts_with("http://") || raw.starts_with("https://") || raw.starts_with("//") {
             raw
         } else {
-            // data:, cid:, fragments (SVG references) and the scheme itself
+            // data:, cid:, fragments (SVG references), and the scheme itself
             // stay as they are.
             let lower = raw.to_ascii_lowercase();
             if raw.is_empty() || raw.starts_with('#') || lower.starts_with("data:") || lower.starts_with("cid:") || lower.starts_with(SCHEME) {
@@ -156,7 +156,7 @@ pub struct Stripped {
 
 /// `url` without the query parameters `level` removes. A parameter carries
 /// `address` when its value is the address, contains it plainly or
-/// percent-encoded, as base64, or as an MD5, SHA-1 or SHA-256 hash, or is
+/// percent-encoded, as base64, or as an MD5, SHA-1, or SHA-256 hash, or is
 /// exactly the address's local part.
 pub fn strip(url: &str, level: Strip, address: Option<&str>) -> Stripped {
     let unchanged = Stripped { url: url.to_string(), tracking: false, address: false };
@@ -305,7 +305,7 @@ fn error(msg: &str) -> glib::Error {
     glib::Error::new(gio::IOErrorEnum::Failed, msg)
 }
 
-/// What a remote load may be: an image, a stylesheet or a font. Fonts are
+/// What a remote load may be: an image, a stylesheet, or a font. Fonts are
 /// often served as application/octet-stream, accepted for font file names.
 fn acceptable(mime: &str, url: &str) -> bool {
     let path = url.split(['?', '#']).next().unwrap_or("").to_ascii_lowercase();
@@ -320,7 +320,7 @@ fn acceptable(mime: &str, url: &str) -> bool {
 }
 
 /// The content at `url` from the cache, else from the network into the
-/// cache: an image, stylesheet or font, and its MIME type.
+/// cache: an image, stylesheet, or font, and its MIME type.
 pub async fn fetch(url: &str) -> Result<(Vec<u8>, String), glib::Error> {
     if let Some(hit) = cached(url) {
         return Ok(hit);
@@ -340,7 +340,7 @@ pub async fn fetch(url: &str) -> Result<(Vec<u8>, String), glib::Error> {
         .map(|(t, _)| t.to_ascii_lowercase())
         .unwrap_or_default();
     if !acceptable(&mime, url) {
-        return Err(error("Not an image, stylesheet or font"));
+        return Err(error("Not an image, stylesheet, or font"));
     }
     let limit = if mime == "text/css" { CSS_LIMIT } else { IMAGE_LIMIT };
     let mut data = Vec::new();

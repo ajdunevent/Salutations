@@ -90,7 +90,7 @@ pub struct MessageList {
     on_activate: RefCell<Option<Rc<dyn Fn()>>>,
     /// Selection mode: rows show checkboxes and clicks check messages.
     select_mode: Cell<bool>,
-    /// Selection mode came from a right click, long press or menu key,
+    /// Selection mode came from a right click, long press, or menu key,
     /// so it ends when nothing is left checked.
     quick_select: Cell<bool>,
     /// UIDs of the checked messages in the current folder.
@@ -756,7 +756,7 @@ impl MessageList {
     }
 
     /// Selection keys, handled before the list's own: Space, Shift+↑/↓,
-    /// Ctrl+A, Shift+Ctrl+A and Escape.
+    /// Ctrl+A, Shift+Ctrl+A, and Escape.
     fn selection_key(&self, key: gtk::gdk::Key, mods: gtk::gdk::ModifierType) -> Option<glib::Propagation> {
         use gtk::gdk::{Key as K, ModifierType as M};
         let ctrl = mods.contains(M::CONTROL_MASK);
@@ -1428,7 +1428,7 @@ impl MessageList {
     }
 }
 
-/// Read, Star, Archive and Delete at the top right of a row while the
+/// Read, Star, Archive, and Delete at the top right of a row while the
 /// pointer is on it; never for touch, and not in selection mode. They act
 /// on the row's messages, whatever is selected.
 fn quick_actions(list: std::rc::Weak<MessageList>, item: &gtk::ListItem, holder: &crate::row_holder::RowHolder) -> gtk::Box {

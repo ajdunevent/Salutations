@@ -101,7 +101,7 @@ image.important {
   font-weight: normal;
 }
 
-/* Recipient pills in To, Cc and Bcc. */
+/* Recipient pills in To, Cc, and Bcc. */
 .recipients {
   padding: 3px 0;
 }

@@ -1,4 +1,4 @@
-//! The reading pane: header block, remote-content banner and a WebKit view
+//! The reading pane: header block, remote-content banner, and a WebKit view
 //! with JavaScript off and remote loads blocked by a Content-Security-Policy.
 
 use std::cell::{Cell, RefCell};
@@ -114,7 +114,7 @@ pub fn register_cid_scheme() {
 }
 
 const CSP_BLOCKED: &str = "default-src 'none'; img-src cid: data:; style-src 'unsafe-inline'; font-src data:";
-/// Images, stylesheets and fonts come only through the remote scheme,
+/// Images, stylesheets, and fonts come only through the remote scheme,
 /// which caches them; nothing loads from the network directly.
 const CSP_ALLOWED: &str = "default-src 'none'; img-src cid: data: x-salutations-remote:; \
      style-src x-salutations-remote: 'unsafe-inline'; font-src x-salutations-remote: data:";
@@ -1007,7 +1007,7 @@ impl Viewer {
     }
 
     /// A line for encrypted mail and good signatures, a warning for an
-    /// uncertified or missing key, an error for a bad signature or a
+    /// uncertified or missing key, and an error for a bad signature or a
     /// message that cannot be decrypted.
     fn show_protection(&self, p: Option<&crypto::Protection>) {
         use crypto::SignStatus as S;
@@ -1071,13 +1071,13 @@ impl Viewer {
     }
 
     /// The contact menu: New message, Add to contacts… or Show in
-    /// Contacts, Copy address.
+    /// Contacts, and Copy address.
     pub fn set_contact_ctx(&self, ctx: Rc<crate::contact_menu::Ctx>) {
         *self.contact_ctx.borrow_mut() = Some(ctx);
     }
 
     /// A person in the headers opens the contact menu at the click, tap,
-    /// right click or long press. `which` is 0 for From, 1 for To, 2 for Cc.
+    /// right click, or long press. `which` is 0 for From, 1 for To, 2 for Cc.
     fn contact_links(self: &Rc<Self>, label: &gtk::Label, which: usize) {
         let at: Rc<Cell<Option<(f64, f64)>>> = Rc::default();
         // A touch on a person: who, and where it went down; and whether the
@@ -1879,7 +1879,7 @@ fn css_rgb(c: &gtk::gdk::RGBA) -> String {
     format!("rgb({}, {}, {})", (c.red() * 255.0) as u8, (c.green() * 255.0) as u8, (c.blue() * 255.0) as u8)
 }
 
-/// Theme-following pages get the window's text, background and accent
+/// Theme-following pages get the window's text, background, and accent
 /// colours; the rest get WebKit's light defaults on white.
 fn page_style(widget: &impl IsA<gtk::Widget>, r: &Rendered) -> String {
     let manager = adw::StyleManager::default();
@@ -1955,7 +1955,7 @@ fn without_local_headers(raw: &[u8]) -> Vec<u8> {
     out
 }
 
-/// The subject, people, date and attachment names, for printing.
+/// The subject, people, date, and attachment names, for printing.
 fn print_header(r: &Rendered, date: &str, attachments: &[salutations_core::compose::Attachment]) -> String {
     use salutations_core::compose::format_addresses;
     let esc = |t: &str| glib::markup_escape_text(t).to_string();

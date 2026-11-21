@@ -1,6 +1,6 @@
 //! Where messages moved to Trash came from, for Restore. Kept in
 //! `trash-origins` under the data directory, one line per message:
-//! summary message ID (hex), account UID and folder full name, separated
+//! summary message ID (hex), account UID, and folder full name, separated
 //! by tabs. The server keeps no such record, so messages trashed by other
 //! clients have none.
 

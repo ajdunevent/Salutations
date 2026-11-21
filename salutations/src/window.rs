@@ -211,7 +211,7 @@ pub struct Window {
     /// The message view or the composer.
     content_stack: gtk::Stack,
     compose: RefCell<Option<compose::Compose>>,
-    /// Its bottom bar holds Reply, Reply All and Forward.
+    /// Its bottom bar holds Reply, Reply All, and Forward.
     viewer_view: adw::ToolbarView,
     /// Reply and Reply All as a button or as a format menu.
     reply_stack: gtk::Stack,
@@ -1402,7 +1402,7 @@ impl Window {
         self.list.checked_uids().into_iter().map(|u| (folder.clone(), u)).collect()
     }
 
-    /// Updates the count, the toolbar and the message pane after the
+    /// Updates the count, the toolbar, and the message pane after the
     /// checked messages change.
     fn checked_changed(&self) {
         if !self.list.select_mode() {
@@ -1536,7 +1536,7 @@ impl Window {
         let objs: Vec<FolderObject> = accounts.iter().map(|c| c.obj.clone()).collect();
         drop(accounts);
         // Rebuilding the rows would collapse every expanded folder, so it
-        // is done only when accounts were added, removed or reordered.
+        // is done only when accounts were added, removed, or reordered.
         let store = &self.folders.accounts;
         let unchanged = store.n_items() as usize == objs.len()
             && objs.iter().enumerate().all(|(i, o)| store.item(i as u32).as_ref() == Some(o.upcast_ref()));
@@ -2220,7 +2220,7 @@ impl Window {
         self.search_icons.set_visible_child_name(if n > 0 { "spinner" } else { "icon" });
     }
 
-    /// Searches From, To, Cc, Subject and body. Matches in the summaries
+    /// Searches From, To, Cc, Subject, and body. Matches in the summaries
     /// show at once; then each folder is refreshed and searched on the
     /// server, one folder at a time per account, and its matches added.
     fn run_search(self: &Rc<Self>, query: String, scope: search::Scope) {

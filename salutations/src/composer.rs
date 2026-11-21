@@ -1,5 +1,5 @@
 //! The message editor, shown in the message view's place. It holds the
-//! fields and reports what the user does; the window saves, sends and
+//! fields and reports what the user does; the window saves, sends, and
 //! closes it.
 
 use std::cell::{Cell, RefCell};

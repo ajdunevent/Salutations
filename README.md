@@ -16,12 +16,12 @@ for an account in Settings and it shows up, folders and all.
   below the list, and one pane at a time on a phone.
 - Touch throughout: pull to refresh, long press to select, and tap a
   name for its contact menu.
-- Hover actions, drag to folders and keyboard shortcuts on the desktop.
+- Hover actions, drag to folders, and keyboard shortcuts on the desktop.
 
 ## Private and secure
 
 - **Remote content stays blocked** until you allow it for a message, a
-  sender or a whole domain. When it loads, Salutations fetches it
+  sender, or a whole domain. When it loads, Salutations fetches it
   itself, without cookies, so senders learn as little as possible.
 - **Basic tracking can be removed** from remote content: known tracking
   codes and your own address are stripped before anything is fetched.
@@ -38,28 +38,28 @@ for an account in Settings and it shows up, folders and all.
 ## Reading and organizing
 
 - Threaded or flat lists, newest or oldest first, with filters for
-  unread, starred and messages with attachments.
-- Star, mark read, move, archive, Junk and Trash, all with undo. The list
+  unread, starred, and messages with attachments.
+- Star, mark read, move, archive, Junk, and Trash, all with undo. The list
   responds at once, so clearing out a full inbox never waits on the
   server.
-- Rules that mark, star or file new mail as it arrives, by sender,
+- Rules that mark, star, or file new mail as it arrives, by sender,
   recipients, subject, mailing list, any header, attachments, sender
-  verification or whether the sender is in your contacts. Start one from
+  verification, or whether the sender is in your contacts. Start one from
   any message, and run it once on what is already in your inbox.
 - Selection mode for working through many messages, with quick
-  selection of all read, unread, starred or unstarred messages.
-- Search a folder, an account or every account, including message
+  selection of all read, unread, starred, or unstarred messages.
+- Search a folder, an account, or every account, including message
   bodies on the server.
-- Full or compact message headers, folded quotes, printing and saving
+- Full or compact message headers, folded quotes, printing, and saving
   messages as files.
-- Avatars from your address book, OpenPGP photo IDs and the `Face:` and
+- Avatars from your address book, OpenPGP photo IDs, and the `Face:` and
   `X-Face:` headers; Libravatar and Gravatar if you turn them on.
 
 ## Writing
 
 - Plain text, or Markdown sent as formatted mail.
 - Images right in the text, embedded with a button or by dropping them,
-  then cropped, scaled, stretched, rotated or flipped. Large photos are
+  then cropped, scaled, stretched, rotated, or flipped. Large photos are
   sent at the size they are shown, not at full size.
 - Recipient completion from your address books, attachments by drag and
   drop, and spell checking.

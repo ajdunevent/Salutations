@@ -27,7 +27,7 @@ pub enum AccountChange {
     Order,
     /// Server push on or off; applies on reconnecting.
     Push,
-    /// Metered, Power Saver or Never download settings, kept by Salutations.
+    /// Metered, Power Saver, or Never download settings, kept by Salutations.
     Sync,
 }
 
@@ -377,7 +377,7 @@ pub fn show(
         .build();
     let avatar_group = adw::PreferencesGroup::builder()
         .title("Online avatars")
-        .description("Used only for senders without a photo in the address books, an OpenPGP photo or a picture in their mail, and never in Junk")
+        .description("Used only for senders without a photo in the address books, an OpenPGP photo, or a picture in their mail, and never in Junk")
         .build();
     avatar_group.add(&bimi);
     avatar_group.add(&libravatar);
@@ -1382,7 +1382,7 @@ fn remote_allowed_row() -> adw::ExpanderRow {
         all.connect_clicked(move |button| {
             let dialog = adw::AlertDialog::new(
                 Some("Remove all?"),
-                Some("Remote content will be blocked again for every sender, domain and message."),
+                Some("Remote content will be blocked again for every sender, domain, and message."),
             );
             dialog.add_responses(&[("cancel", "_Cancel"), ("remove", "_Remove all")]);
             dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);

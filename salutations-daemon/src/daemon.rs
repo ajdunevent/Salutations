@@ -23,7 +23,7 @@ pub(crate) const DELETED: u32 = camel::MessageFlags::DELETED.bits();
 pub(crate) const JUNK: u32 = camel::MessageFlags::JUNK.bits();
 
 /// A message as the rules and notifications compare it: subject, date
-/// sent and sender. Moves into INBOX made by Salutations register theirs,
+/// sent, and sender. Moves into INBOX made by Salutations register theirs,
 /// so they are not taken for new mail.
 pub(crate) type MessageKey = (String, i64, String);
 

@@ -1,5 +1,5 @@
 //! Composing in the window: opening the composer for a new message, a
-//! reply, a forward or a draft, saving drafts and sending.
+//! reply, a forward, or a draft, saving drafts, and sending.
 //!
 //! Drafts are saved to the account's Drafts folder 30 s after the last
 //! edit, at least every 2 minutes while edits continue, and when the
@@ -146,7 +146,7 @@ impl Window {
         self.start_compose(account, Kind::New, out, None, None, true);
     }
 
-    /// The shown message with its account, folder and UID.
+    /// The shown message with its account, folder, and UID.
     fn shown_original(&self) -> Option<(Rc<AccountCtl>, camel::Folder, String, camel::MimeMessage)> {
         let (folder, uid) = self.viewer.current()?;
         let msg = self.viewer.message()?;
@@ -393,7 +393,7 @@ impl Window {
     }
 
     /// A new message from outside the window: a `mailto:` link, the
-    /// command line or the desktop's New message action. It starts from
+    /// command line, or the desktop's New message action. It starts from
     /// the default account; a message being written is saved first.
     pub(crate) fn compose_external(self: &Rc<Self>, mailto: Option<salutations_core::mailto::Mailto>) {
         let account = {
@@ -820,7 +820,7 @@ impl Window {
     }
 
     /// Finds the message with Message-ID `id` in the account (INBOX first,
-    /// then Archive, then the other folders but Drafts, Sent, Junk and
+    /// then Archive, then the other folders but Drafts, Sent, Junk, and
     /// Trash) and marks it as `kind` answered it.
     fn mark_original(self: &Rc<Self>, account: &Rc<AccountCtl>, id: String, kind: Kind) {
         let Some(store) = account.eng.store() else { return };

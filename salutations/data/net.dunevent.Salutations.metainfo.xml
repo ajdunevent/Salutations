@@ -70,11 +70,20 @@
   </screenshots>
 
   <releases>
+    <release version="0.3.1" date="2026-11-21">
+      <description>
+        <p>Notifications say which account new mail is in.</p>
+        <ul>
+          <li>With more than one account, a new message's notification is titled with the account's name, and its text starts with the sender and subject</li>
+          <li>Small wording fixes</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-11-21">
       <description>
         <p>Far less memory in the background.</p>
         <ul>
-          <li>The window is now a separate process that ends when it closes; syncing, notifications and rules carry on in a small background process</li>
+          <li>The window is now a separate process that ends when it closes; syncing, notifications, and rules carry on in a small background process</li>
           <li>Opening the window from the background takes a moment longer, since it starts afresh</li>
         </ul>
       </description>
@@ -91,8 +100,8 @@
       <description>
         <p>Images in your messages, and rules for new mail.</p>
         <ul>
-          <li>Embed images in Markdown messages with the Embed button or by dropping them, then crop, scale, stretch, rotate or flip them; large photos are sent at the size they are shown</li>
-          <li>Rules file, mark and star new mail in Inbox, and can be started from any message</li>
+          <li>Embed images in Markdown messages with the Embed button or by dropping them, then crop, scale, stretch, rotate, or flip them; large photos are sent at the size they are shown</li>
+          <li>Rules file, mark, and star new mail in Inbox, and can be started from any message</li>
         </ul>
       </description>
     </release>
@@ -126,11 +135,11 @@
       <description>
         <p>The first release.</p>
         <ul>
-          <li>Accounts from GNOME Online Accounts, with folders, threads, search and offline reading</li>
+          <li>Accounts from GNOME Online Accounts, with folders, threads, search, and offline reading</li>
           <li>An adaptive layout with touch gestures, from phones to desktops</li>
           <li>Remote content blocked by default, with optional removal of basic tracking</li>
-          <li>Link checks, forged-sender flags and verified sender logos</li>
-          <li>OpenPGP signing, encryption and decryption through GnuPG</li>
+          <li>Link checks, forged-sender flags, and verified sender logos</li>
+          <li>OpenPGP signing, encryption, and decryption through GnuPG</li>
           <li>Undoable actions that keep working while the server catches up</li>
         </ul>
       </description>

@@ -250,7 +250,7 @@ impl Session {
             .unwrap_or_default())
     }
 
-    /// Which folders the server marks as Sent, Drafts, Archive, Junk and
+    /// Which folders the server marks as Sent, Drafts, Archive, Junk, and
     /// Trash (RFC 6154 SPECIAL-USE, else well-known names). Camel's folder
     /// info carries no type for these on IMAP, only for INBOX.
     pub async fn special_folders(&self, store: &camel::Store) -> Result<SpecialFolders, glib::Error> {

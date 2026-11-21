@@ -1,6 +1,6 @@
-//! Salutations' background process. It owns the mail accounts and keeps
-//! them synced, notifies about new mail and runs the rules; the window is
-//! a separate process it starts on demand, so GTK, WebKit and the GPU
+//! Salutations' background process. It owns the mail accounts, keeps them
+//! synced, notifies about new mail, and runs the rules; the window is
+//! a separate process it starts on demand, so GTK, WebKit, and the GPU
 //! driver are not loaded while no window is open.
 
 mod daemon;

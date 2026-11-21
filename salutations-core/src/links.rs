@@ -12,7 +12,7 @@ pub const SCHEME: &str = "x-salutations-link";
 #[derive(Debug, Clone, PartialEq)]
 pub struct Link {
     pub href: String,
-    /// Visible text with tags removed, entities decoded and whitespace
+    /// Visible text with tags removed, entities decoded, and whitespace
     /// collapsed; empty for an image-only link.
     pub text: String,
 }
@@ -240,7 +240,7 @@ static BARE: LazyLock<Regex> = LazyLock::new(|| {
 
 /// Makes web addresses and email addresses written as plain text into
 /// links, outside existing links and outside `head`, `script`, `style`,
-/// `title` and `textarea`. Text in `html` is HTML-escaped, so the address
+/// `title`, and `textarea`. Text in `html` is HTML-escaped, so the address
 /// text is used as the href as it stands.
 pub fn linkify(html: &str) -> String {
     let mut out = String::with_capacity(html.len() + 64);

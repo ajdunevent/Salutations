@@ -31,7 +31,7 @@ pub(super) struct ActionButtons {
     junk: gtk::Button,
     read: gtk::Button,
     star: gtk::Button,
-    /// Action name, button and its tooltip, for explaining why an action
+    /// Action name, button, and its tooltip, for explaining why an action
     /// is unavailable.
     tooltips: Vec<(&'static str, gtk::Widget, &'static str)>,
 }

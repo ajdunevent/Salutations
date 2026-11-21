@@ -1,5 +1,5 @@
-//! Camel's GnuPG cipher context: PGP/MIME signing, encryption, decryption
-//! and verification, and public key listing, export and import. Every call
+//! Camel's GnuPG cipher context: PGP/MIME signing, encryption, decryption,
+//! and verification, and public key listing, export, and import. Every call
 //! runs `gpg` and blocks.
 
 use std::ffi::c_char;
@@ -241,7 +241,7 @@ impl GpgContext {
         Ok(unsafe { take_validity(v) })
     }
 
-    /// Public keys in the keyring matching `keyid` (an address, key ID or
+    /// Public keys in the keyring matching `keyid` (an address, key ID, or
     /// fingerprint).
     pub fn public_key_info_sync(&self, keyid: &str) -> Result<Vec<KeyInfo>, glib::Error> {
         let mut list = std::ptr::null_mut();

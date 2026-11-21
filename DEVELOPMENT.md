@@ -1,6 +1,6 @@
 # Developing Salutations
 
-Building, packaging and the technical notes behind Salutations. For what
+Building, packaging, and the technical notes behind Salutations. For what
 the app does, see the [README](README.md).
 
 Salutations is a GTK4/libadwaita app in Rust. Accounts come from GNOME
@@ -44,11 +44,11 @@ LGPL-2.1-or-later (`bindings/COPYING.LGPL-2.1`), the same as EDS.
 
 ## Processes
 
-Salutations runs as two processes so that GTK, WebKit and the GPU driver
+Salutations runs as two processes so that GTK, WebKit, and the GPU driver
 are loaded only while a window is open. `salutations` is the background
-process. It owns the application ID, the Camel session and every store,
-keeps the accounts synced, notifies about new mail, runs the rules and
-sends waiting mail. When a window is wanted (a launch, a notification, a
+process. It owns the application ID, the Camel session, and every store.
+It keeps the accounts synced, notifies about new mail, runs the rules,
+and sends waiting mail. When a window is wanted (a launch, a notification, a
 link) it starts `salutations-window` and hands it one end of a socket
 pair as file descriptor 3 (`SALUTATIONS_IPC_FD`); the two talk peer to
 peer over D-Bus on that socket, with no bus name and nothing other
@@ -56,7 +56,7 @@ processes can see. Closing the window ends the window process. Without
 Run in background, the background process then quits as well.
 
 The window never touches Camel's stores. `salutations/src/remote.rs`
-provides stand-ins for the Camel folder, store, message summary and
+provides stand-ins for the Camel folder, store, message summary, and
 session with the methods the window uses, answered by the background
 process (`salutations-daemon/src/daemon.rs`); `salutations/src/mail.rs`
 puts them in place of Camel's under the same names. A folder's summary
@@ -68,7 +68,7 @@ GLib errors keep their domain and code across the connection, so
 `matches()` works on either side.
 
 Notification pictures are decoded in the background process without
-GTK: PNG through cairo, JPEG through libturbojpeg and BIMI's SVG through
+GTK: PNG through cairo, JPEG through libturbojpeg, and BIMI's SVG through
 librsvg, all from the GNOME runtime.
 
 ## Building and running
@@ -135,7 +135,7 @@ A round trip against a throwaway keyring:
 50 runtime together with what the runtime lacks: libical, the GNOME
 Online Accounts client library, evolution-data-server 3.60.2 (Camel and
 the client libraries; the sandboxed app uses the host's source registry
-and address books over D-Bus) and libspelling. Crates come from `build-aux/cargo-sources.json`, so Cargo
+and address books over D-Bus), and libspelling. Crates come from `build-aux/cargo-sources.json`, so Cargo
 builds offline; run `scripts/update-cargo-sources.sh` after any change to
 `Cargo.lock`.
 
@@ -149,7 +149,7 @@ flatpak run net.dunevent.Salutations
 
 The first build compiles evolution-data-server and takes a while; later
 builds reuse it from `.flatpak-builder`. The Flatpak keeps its own
-settings, caches and notification state in
+settings, caches, and notification state in
 `~/.var/app/net.dunevent.Salutations`, separate from a build run on the
 host.
 
@@ -157,7 +157,7 @@ host.
 
 `scripts/dev.sh`, run on the host, asks for the architecture (this
 machine, the other one, or both), what to produce (a `.flatpak` file in
-`dist/`, an install for the current user, or both) and the Cargo profile.
+`dist/`, an install for the current user, or both), and the Cargo profile.
 The bundled libraries are built once per architecture with
 flatpak-builder and again only when the manifest changes; Salutations
 itself is compiled with Cargo inside the SDK, so later runs rebuild only
@@ -168,7 +168,7 @@ emulation.
 
 ### Desktop file outside Flatpak
 
-Notifications, the dock's unread badge and GNOME's per-app notification
+Notifications, the dock's unread badge, and GNOME's per-app notification
 settings find the app through its desktop file. Until there is a
 package, install it with the path of the built binary:
 
@@ -195,7 +195,7 @@ reads none of the structs that differ.
 Camel's state goes to `~/.local/share/salutations` and
 `~/.cache/salutations`; deleting both resets it. The data directory also
 holds each account's special folders, the messages allowed to load
-remote content and those whose tracking removal was loosened; the cache
+remote content, and those whose tracking removal was loosened; the cache
 directory holds remote content and avatars. Preferences and
 remote-content allow lists are in `~/.config/salutations/settings.ini`.
 
@@ -212,7 +212,7 @@ cargo test -p camel-sys -p edataserver-sys
 
 The gir revision is the one gtk-rs-core 0.22.9 pins, matching the
 `glib 0.22` crates. The script copies the system `.gir` files into
-`gir-files/`, patches them and reruns gir on all four crates. A new EDS
+`gir-files/`, patches them, and reruns gir on all four crates. A new EDS
 release can need another case in `fix-girs.py`; the ABI tests show where.
 
 ## Findings
@@ -246,10 +246,10 @@ These shaped `salutations-core` and the app and apply to all later work.
   has no default; the binding's `SessionImpl::filter_driver()` returns
   none.
 - EDS 3.58 removed `camel_folder_get_uids()`, `camel_folder_free_uids()`,
-  `camel_folder_search_by_expression()`, `camel_object_state_write()`
+  `camel_folder_search_by_expression()`, `camel_object_state_write()`,
   and the boxed `CamelFolderThread`, and replaced them with
   `camel_folder_dup_uids()`, `camel_folder_search_sync()`,
-  `camel_folder_save_state()` and a `CamelFolderThread` GObject.
+  `camel_folder_save_state()`, and a `CamelFolderThread` GObject.
   `compat.rs` uses whichever the installed Camel has. It also removed
   `camel_folder_get_unread_message_count()`; the folder summary's counts
   replace it.
@@ -261,7 +261,7 @@ These shaped `salutations-core` and the app and apply to all later work.
   `transferred_uids`, even with UIDPLUS. It adds the moved messages to the
   destination's summary from the server's COPYUID answer, so the window
   finds their new UIDs by comparing the summary before and after (by
-  subject, sent date and sender) for undo.
+  subject, sent date, and sender) for undo.
 - When an IMAPX account has a real Trash folder, syncing a folder moves
   its messages flagged `\Deleted` to Trash rather than expunging them.
   Permanent delete therefore moves messages to Trash first, then flags
@@ -269,7 +269,7 @@ These shaped `salutations-core` and the app and apply to all later work.
 - Camel's folder search sees only messages in the folder's summary, which
   is empty for a folder never opened and stale for one not kept offline.
   Search therefore refreshes each folder in scope before its server
-  search. IMAPX searches From, To, Cc and Subject in the summary and
+  search. IMAPX searches From, To, Cc, and Subject in the summary and
   sends `body-contains` to the server as `SEARCH BODY` (cached bodies when
   offline).
 - New-mail notifications use `org.freedesktop.Notifications` rather than
@@ -317,7 +317,7 @@ These shaped `salutations-core` and the app and apply to all later work.
   the cache directory, so clearing `~/.cache/salutations` also resets
   which folders are kept offline.
 - Evolution's `EMailSession` and `EMailUISession` are not in EDS. Their
-  account, OAuth2 and password logic is reimplemented in
+  account, OAuth2, and password logic is reimplemented in
   `salutations-core/src/session.rs` and `auth.rs`. A rejected password
   currently fails instead of prompting.
 
@@ -327,5 +327,5 @@ path has not run against a real account yet.
 The app is tested in the GNOME 50 SDK (GTK 4.22, libadwaita 1.9,
 WebKitGTK 2.54, EDS 3.60.2) on a virtual display, against a local
 Dovecot server through a non-GOA EDS source. The EDS 3.56 path is tested
-the same way with Debian trixie's 3.56.2 Camel, EDataServer and IMAPX
+the same way with Debian trixie's 3.56.2 Camel, EDataServer, and IMAPX
 provider in place of the SDK's.

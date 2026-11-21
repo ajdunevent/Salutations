@@ -615,7 +615,7 @@ pub fn markdown_html_with(text: &str, inline: &[Inline]) -> String {
     let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let known = |dest: &str| dest.strip_prefix("cid:").filter(|c| inline.iter().any(|i| i.cid == *c)).map(str::to_string);
     let mut events = Vec::new();
-    // The image being read: its Content-ID, size and alt text so far.
+    // The image being read: its Content-ID, size, and alt text so far.
     let mut image: Option<(String, Size, String)> = None;
     for e in Parser::new_ext(text, options) {
         if let Some((_, _, alt)) = image.as_mut() {
@@ -857,7 +857,7 @@ pub fn with_signature(body: &str, signature: &str, above_quote: bool) -> String 
 // HTML to text, for quoting HTML-only mail
 
 /// Converts HTML to readable plain text: block elements become line breaks,
-/// list items get "- ", blockquotes become "> " quotes, and scripts, styles
+/// list items get "- ", blockquotes become "> " quotes, and scripts, styles,
 /// and the head are dropped.
 pub fn html_to_text(html: &str) -> String {
     static TAG: LazyLock<Regex> =

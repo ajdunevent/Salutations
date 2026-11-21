@@ -107,7 +107,7 @@ fn main() -> glib::ExitCode {
 /// The metainfo in the resource bundle, which the About dialog reads.
 const METAINFO: &str = "/net/dunevent/Salutations/net.dunevent.Salutations.metainfo.xml";
 
-/// The About dialog. Name, developer, links and release notes come from the
+/// The About dialog. Name, developer, links, and release notes come from the
 /// metainfo, so they are edited there; the release notes shown are those of
 /// the Cargo version, which the metainfo must list (a test checks).
 fn about_dialog() -> adw::AboutDialog {
@@ -224,7 +224,7 @@ fn shortcuts_dialog(parent: Option<&gtk::Window>) {
         ("Archive", "a"),
         ("Move to Trash", "Delete"),
         ("Delete permanently", "<Shift>Delete"),
-        ("Undo move, archive or delete", "<Control>z"),
+        ("Undo move, archive, or delete", "<Control>z"),
         ("Print", "<Control>p"),
         ("Save as file", "<Control>s"),
         ("Search", "<Control>f"),

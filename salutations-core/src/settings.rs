@@ -86,7 +86,7 @@ pub struct ComposePrefs {
     /// The signature goes above the quoted message instead of at the end.
     pub signature_above: bool,
     /// Fingerprint of the OpenPGP key that signs; None turns signing,
-    /// encryption and key sharing off for the account.
+    /// encryption, and key sharing off for the account.
     pub signing_key: Option<String>,
     /// New messages and forwards start with Sign & Encrypt.
     pub encrypt_new: bool,
@@ -361,7 +361,7 @@ impl Settings {
                 include_signature: kf.boolean(group, "include-signature").unwrap_or(d.include_signature),
                 signature_above: kf.boolean(group, "signature-above").unwrap_or(d.signature_above),
                 signing_key: kf.string(group, "signing-key").ok().map(|s| s.to_string()).filter(|s| !s.is_empty()),
-                // Before the two switches: "encrypt" was always, on-reply or never.
+                // Before the two switches: "encrypt" was always, on-reply, or never.
                 encrypt_new: kf
                     .boolean(group, "encrypt-new")
                     .unwrap_or_else(|_| kf.string(group, "encrypt").is_ok_and(|v| v == "always")),

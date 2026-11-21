@@ -577,7 +577,7 @@ pub async fn crop_dialog(parent: &impl IsA<gtk::Widget>, texture: &gdk::Texture)
 }
 
 /// The widget shown at an image's place in the editor: the picture with a
-/// menu button over its corner. The button, a right click and a long press
+/// menu button over its corner. The button, a right click, and a long press
 /// call `on_menu` with the widget the menu points at and, for a press, the
 /// point in it.
 pub fn widget(paintable: &SizedImage, on_menu: impl Fn(&gtk::Widget, Option<(f64, f64)>) + 'static) -> gtk::Overlay {

@@ -86,7 +86,7 @@ impl Daemon {
     fn inbox_changed(self: &Rc<Self>, acct: &Rc<AccountState>, folder: &camel::Folder, changes: &camel::FolderChanges) {
         let extra = self.extra(acct.uid());
         let uid = acct.uid().to_string();
-        // Read, moved or deleted anywhere: its notification goes.
+        // Read, moved, or deleted anywhere: its notification goes.
         let gone = |u: &String| changes.removed.contains(u) || folder.message_info(u).is_none() || folder.message_flags(u) & (SEEN | DELETED) != 0;
         let withdrawn: Vec<String> = extra.noted.borrow().iter().filter(|u| gone(u)).cloned().collect();
         for u in &withdrawn {
@@ -181,6 +181,7 @@ impl Daemon {
             return;
         }
         let junk = acct.special().is_some_and(|s| s.junk.is_some());
+        let account_name = (self.engine.accounts().len() > 1).then(|| acct.account.display_name().to_string());
         for u in fresh {
             let Some(info) = folder.message_info(&u) else { continue };
             let from = address_list(&info.from().unwrap_or_default()).into_iter().next().unwrap_or_default();
@@ -190,11 +191,12 @@ impl Daemon {
                 info.user_header("Authentication-Results").and_then(|h| salutations_core::verify::parse(&h).verified_domain(&from.email));
             extra.noted.borrow_mut().push(u.clone());
             // The contact's photo can take a moment to fetch.
-            let (this, account) = (self.clone(), account.clone());
+            let (this, account, account_name) = (self.clone(), account.clone(), account_name.clone());
             glib::spawn_future_local(async move {
                 let (contact_name, photo) = this.people.lookup(&from.email, verified.as_deref()).await;
                 this.notifier.message(MessageNote {
                     account: &account,
+                    account_name,
                     uid: &u,
                     sender: from.display(),
                     contact_name,

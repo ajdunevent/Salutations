@@ -245,7 +245,7 @@ pub async fn edit(parent: &impl IsA<gtk::Widget>, account: &str, folders: &[(Str
             Some(false) => 2,
         })
         .build();
-    // Archive, Junk and Trash have entries of their own; INBOX, Drafts and
+    // Archive, Junk, and Trash have entries of their own; INBOX, Drafts, and
     // Sent are no place to file mail.
     let special = salutations_core::SpecialFolders::load(account).unwrap_or_default();
     let skip: Vec<String> = [special.archive, special.junk, special.trash, special.drafts, special.sent].into_iter().flatten().collect();
@@ -352,7 +352,7 @@ pub async fn edit(parent: &impl IsA<gtk::Widget>, account: &str, folders: &[(Str
             f(Edit::Save(rule));
         }
     });
-    // Save is offered once the rule has a name, complete conditions and
+    // Save is offered once the rule has a name, complete conditions, and
     // an action.
     let update = {
         let (save, c) = (save.clone(), collect.clone());

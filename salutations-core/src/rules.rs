@@ -115,7 +115,7 @@ fn text_matches(op: TextOp, value: &str, candidates: &[String]) -> bool {
     if op == TextOp::NotContains { !any } else { any }
 }
 
-/// Each address as its address, its name and both together, so "is"
+/// Each address as its address, its name, and both together, so "is"
 /// and "starts with" work on whichever the user typed.
 fn address_texts(list: &[Address]) -> Vec<String> {
     let mut out = Vec::new();

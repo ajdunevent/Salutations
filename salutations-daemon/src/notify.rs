@@ -7,7 +7,7 @@
 //! notification is withdrawn when Salutations quits.
 //!
 //! The badge is the Unity launcher API (`com.canonical.Unity.LauncherEntry`)
-//! that Dash to Dock, Plank and KDE read: an `Update` signal on each change,
+//! that Dash to Dock, Plank, and KDE read: an `Update` signal on each change,
 //! and a `Query` method answering docks that start (or restart) later.
 
 use std::cell::RefCell;
@@ -41,6 +41,8 @@ pub enum Action {
 
 pub struct MessageNote<'a> {
     pub account: &'a str,
+    /// The account's name when there is more than one account.
+    pub account_name: Option<String>,
     pub uid: &'a str,
     pub sender: &'a str,
     /// The address book's name for the sender, for the icon's initials.
@@ -185,10 +187,14 @@ impl Notifier {
     pub fn message(&self, m: MessageNote) {
         let sender = if m.sender.is_empty() { "Unknown sender" } else { m.sender };
         let subject = if m.subject.is_empty() { "(No subject)" } else { m.subject };
+        let (title, first) = match &m.account_name {
+            Some(name) => (name.as_str(), format!("{sender}: {subject}")),
+            None => (sender, subject.to_string()),
+        };
         let body = if m.preview.is_empty() {
-            escape(subject)
+            escape(&first)
         } else {
-            format!("<b>{}</b>\n{}", escape(subject), escape(m.preview))
+            format!("<b>{}</b>\n{}", escape(&first), escape(m.preview))
         };
         let mut actions = vec![("default", "Open"), ("reply", "Reply"), ("delete", "Delete")];
         if m.junk {
@@ -196,7 +202,7 @@ impl Notifier {
         }
         let key = Subject::Message { account: m.account.into(), uid: m.uid.into() };
         let icon = avatar(m.contact_name.as_deref().unwrap_or(sender), m.photo.as_ref());
-        self.send(key, sender, &body, &actions, Some(icon), m.sound);
+        self.send(key, title, &body, &actions, Some(icon), m.sound);
     }
 
     /// Replaces an existing combined notification in place.
