@@ -1544,6 +1544,7 @@ impl Window {
             store.splice(0, store.n_items(), &objs);
         }
         self.update_title();
+        self.update_unsent();
     }
 
     fn sync_button_pressed(self: &Rc<Self>, obj: &FolderObject, button: &gtk::Button) {
@@ -1601,6 +1602,7 @@ impl Window {
                 });
                 pop.popup();
             }
+            SyncState::Idle | SyncState::Offline if obj.unsent() > 0 => self.show_unsent(&ctl),
             SyncState::Idle | SyncState::Offline => self.engine.sync(&ctl.eng),
         }
     }
@@ -2245,7 +2247,7 @@ impl Window {
             _ => vec![open_account.clone()],
         };
         let several = accounts.len() > 1;
-        let targets: Vec<(Rc<AccountCtl>, Vec<(String, Option<String>)>)> = accounts
+        let targets: SearchTargets<String> = accounts
             .into_iter()
             .map(|ctl| {
                 let folders = match scope {
@@ -2269,7 +2271,7 @@ impl Window {
         glib::spawn_future_local(async move {
             let current = |this: &Rc<Window>| this.search_gen.get() == generation && !cancel.is_cancelled();
             // Summary matches first, for every folder in scope.
-            let mut opened: Vec<(Rc<AccountCtl>, Vec<(camel::Folder, Option<String>)>)> = Vec::new();
+            let mut opened: SearchTargets<camel::Folder> = Vec::new();
             for (ctl, folders) in targets {
                 let Ok(store) = this.engine.store_for(&ctl.eng) else { continue };
                 let mut list = Vec::new();
@@ -3089,6 +3091,7 @@ fn mark_unread(folder: &camel::Folder, uids: &[String]) {
 
 /// What identifies a message across folders when its new UID is unknown.
 type MessageKey = (String, i64, String);
+type SearchTargets<F> = Vec<(Rc<AccountCtl>, Vec<(F, Option<String>)>)>;
 
 fn message_key(folder: &camel::Folder, uid: &str) -> Option<MessageKey> {
     let info = folder.message_info(uid)?;

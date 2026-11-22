@@ -15,6 +15,8 @@ use super::*;
 use crate::composer::{CryptoSetup, FromChoice, Kind, Protection};
 use salutations_core::crypto;
 
+type WindowAction = Box<dyn Fn(&Rc<Window>)>;
+
 const SAVE_IDLE: Duration = Duration::from_secs(30);
 const SAVE_MAX: Duration = Duration::from_secs(120);
 
@@ -101,7 +103,7 @@ impl Window {
                 this.schedule_save();
             }
         });
-        let actions: [(&str, Box<dyn Fn(&Rc<Window>)>); 8] = [
+        let actions: [(&str, WindowAction); 8] = [
             ("compose", Box::new(|w| w.compose_new())),
             ("reply", Box::new(|w| w.compose_reply(false, None))),
             ("reply-all", Box::new(|w| w.compose_reply(true, None))),
@@ -258,7 +260,7 @@ impl Window {
         self.list.unselect();
         self.viewer.forget();
         let prefs = Settings::get().compose_for(&account.account.uid);
-        let froms = self.from_choices();
+        let froms = self.sender_choices();
         self.composer.load(
             kind,
             &out,
@@ -293,7 +295,7 @@ impl Window {
     }
 
     /// Every account's address and aliases, in account order.
-    fn from_choices(&self) -> Vec<FromChoice> {
+    fn sender_choices(&self) -> Vec<FromChoice> {
         let mut out = Vec::new();
         for ctl in self.accounts.borrow().iter() {
             let mut addresses = vec![ctl.account.sender()];
@@ -603,7 +605,7 @@ impl Window {
         });
     }
 
-    async fn delete_draft(self: &Rc<Self>, account: &Rc<AccountCtl>, uid: String) {
+    pub(super) async fn delete_draft(self: &Rc<Self>, account: &Rc<AccountCtl>, uid: String) {
         let drafts = account.eng.special().as_ref().and_then(|s| s.drafts.clone());
         let store = account.eng.store();
         let (Some(drafts), Some(store)) = (drafts, store) else { return };

@@ -57,7 +57,7 @@ pub fn cache_dir() -> PathBuf {
 /// and runs OpenPGP; the background process owns the stores and the
 /// certificate database.
 pub fn init_window() -> Result<(), glib::Error> {
-    camel::init(&data_dir(), false).map_err(|e| glib::Error::new(gio::IOErrorEnum::Failed, &e.to_string()))
+    camel::init(data_dir(), false).map_err(|e| glib::Error::new(gio::IOErrorEnum::Failed, &e.to_string()))
 }
 
 /// Initializes Camel and loads its providers. Must run once, on the main

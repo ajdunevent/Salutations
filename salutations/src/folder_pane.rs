@@ -43,9 +43,9 @@ impl FolderPane {
         on_files: impl Fn(&FolderObject, Vec<gio::File>) + 'static,
         on_menu: impl Fn(&FolderObject, &gtk::Widget, f64, f64) + 'static,
     ) -> Rc<Self> {
-        let on_menu: Rc<dyn Fn(&FolderObject, &gtk::Widget, f64, f64)> = Rc::new(on_menu);
-        let on_drop: Rc<dyn Fn(&FolderObject, DraggedMessages)> = Rc::new(on_drop);
-        let on_files: Rc<dyn Fn(&FolderObject, Vec<gio::File>)> = Rc::new(on_files);
+        let on_menu: MenuHandler = Rc::new(on_menu);
+        let on_drop: DropHandler = Rc::new(on_drop);
+        let on_files: FilesHandler = Rc::new(on_files);
         let on_pick = Rc::new(on_pick);
         let accounts = gio::ListStore::new::<FolderObject>();
         let tree = gtk::TreeListModel::new(accounts.clone(), false, true, |item| {
@@ -190,7 +190,7 @@ fn accepts(obj: &FolderObject, m: &DraggedMessages) -> bool {
 
 /// Takes message drags; a collapsed row expands after the drag rests on
 /// it.
-fn drop_target(item: &gtk::ListItem, on_drop: Rc<dyn Fn(&FolderObject, DraggedMessages)>) -> gtk::DropTarget {
+fn drop_target(item: &gtk::ListItem, on_drop: DropHandler) -> gtk::DropTarget {
     let target = gtk::DropTarget::new(DraggedMessages::static_type(), gdk::DragAction::MOVE);
     // The value is needed before the drop to refuse the messages' own folder.
     target.set_preload(true);
@@ -249,7 +249,7 @@ fn drop_target(item: &gtk::ListItem, on_drop: Rc<dyn Fn(&FolderObject, DraggedMe
 }
 
 /// Takes files from outside, to import into the row's folder.
-fn file_drop_target(item: &gtk::ListItem, on_files: Rc<dyn Fn(&FolderObject, Vec<gio::File>)>) -> gtk::DropTarget {
+fn file_drop_target(item: &gtk::ListItem, on_files: FilesHandler) -> gtk::DropTarget {
     let target = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
     let weak = item.downgrade();
     target.connect_enter(move |_, _, _| {
@@ -274,6 +274,9 @@ fn is_folder_row(item: &gtk::ListItem) -> bool {
 }
 
 type SyncHandler = Rc<dyn Fn(&FolderObject, &gtk::Button)>;
+type MenuHandler = Rc<dyn Fn(&FolderObject, &gtk::Widget, f64, f64)>;
+type DropHandler = Rc<dyn Fn(&FolderObject, DraggedMessages)>;
+type FilesHandler = Rc<dyn Fn(&FolderObject, Vec<gio::File>)>;
 
 fn row_widget(obj: &FolderObject, on_sync: SyncHandler) -> gtk::Widget {
     let b = gtk::Box::new(gtk::Orientation::Horizontal, 10);
@@ -320,15 +323,18 @@ fn sync_button(obj: &FolderObject, on_sync: SyncHandler) -> gtk::Button {
         move |obj: &FolderObject| {
             let (Some(button), Some(stack)) = (button.upgrade(), stack.upgrade()) else { return };
             let title = obj.title();
+            let unsent = obj.unsent();
             let (page, tip) = match obj.sync_state() {
-                SyncState::Idle => ("idle", format!("Sync {title} now")),
                 SyncState::Syncing => ("syncing", format!("Syncing {title}; click to cancel")),
-                SyncState::Offline => ("offline", format!("{title} is offline; click to retry")),
                 SyncState::Error => ("error", obj.sync_message()),
+                _ if unsent == 1 => ("error", "1 message not sent; click for details".to_string()),
+                _ if unsent > 1 => ("error", format!("{unsent} messages not sent; click for details")),
+                SyncState::Idle => ("idle", format!("Sync {title} now")),
+                SyncState::Offline => ("offline", format!("{title} is offline; click to retry")),
             };
             stack.set_visible_child_name(page);
             button.set_tooltip_text(Some(&tip));
-            if obj.sync_state() == SyncState::Error {
+            if page == "error" {
                 button.add_css_class("warning");
             } else {
                 button.remove_css_class("warning");
@@ -336,11 +342,13 @@ fn sync_button(obj: &FolderObject, on_sync: SyncHandler) -> gtk::Button {
         }
     };
     update(obj);
-    let handler = std::cell::Cell::new(Some(obj.connect_sync_state_notify(update)));
+    let handlers = std::cell::RefCell::new(vec![obj.connect_sync_state_notify(update.clone()), obj.connect_unsent_notify(update)]);
     let weak = obj.downgrade();
     button.connect_destroy(move |_| {
-        if let (Some(o), Some(h)) = (weak.upgrade(), handler.take()) {
-            o.disconnect(h);
+        if let Some(o) = weak.upgrade() {
+            for h in handlers.take() {
+                o.disconnect(h);
+            }
         }
     });
     let weak = obj.downgrade();

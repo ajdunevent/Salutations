@@ -425,6 +425,7 @@ pub trait FolderExt: IsA<Folder> + 'static {
     }
 
     #[doc(alias = "camel_folder_set_flags")]
+    #[doc(alias = "flags")]
     fn set_flags(&self, folder_flags: u32) {
         unsafe {
             ffi::camel_folder_set_flags(self.as_ref().to_glib_none().0, folder_flags);
@@ -653,6 +654,21 @@ pub trait FolderExt: IsA<Folder> + 'static {
             let f: Box_<F> = Box_::new(f);
             connect_raw(self.as_ptr() as *mut _, c"notify::display-name".as_ptr(),
                 Some(std::mem::transmute::<*const (), unsafe extern "C" fn()>(notify_display_name_trampoline::<Self, F> as *const ())), Box_::into_raw(f))
+        }
+    }
+
+    #[cfg(feature = "v3_62")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "v3_62")))]
+    #[doc(alias = "flags")]
+    fn connect_flags_notify<F: Fn(&Self) + Send + Sync + 'static>(&self, f: F) -> SignalHandlerId {
+        unsafe extern "C" fn notify_flags_trampoline<P: IsA<Folder>, F: Fn(&P) + Send + Sync + 'static>(this: *mut ffi::CamelFolder, _param_spec: glib::ffi::gpointer, f: glib::ffi::gpointer) { unsafe {
+            let f: &F = &*(f as *const F);
+            f(Folder::from_glib_borrow(this).unsafe_cast_ref())
+        }}
+        unsafe {
+            let f: Box_<F> = Box_::new(f);
+            connect_raw(self.as_ptr() as *mut _, c"notify::flags".as_ptr(),
+                Some(std::mem::transmute::<*const (), unsafe extern "C" fn()>(notify_flags_trampoline::<Self, F> as *const ())), Box_::into_raw(f))
         }
     }
 

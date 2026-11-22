@@ -215,7 +215,7 @@ pub fn write(registry: &SourceRegistry, account: &crate::Account, sync: &Offline
                 let p = s.to_glib_none().0;
                 camel::ffi::camel_offline_settings_set_limit_by_age(p, true.into_glib());
                 camel::ffi::camel_offline_settings_set_limit_unit(p, unit.camel());
-                // Declared gboolean in the 3.60 header, but stored as gint.
+                // Declared gboolean in the header, but stored as gint.
                 camel::ffi::camel_offline_settings_set_limit_value(p, value);
             },
             Window::AllTime => s.set_limit_by_age(false),
@@ -315,7 +315,7 @@ pub fn set_folder_synced(folder: &camel::Folder, on: bool) {
 /// The directory of `folder`'s cached message bodies: Camel keeps its data
 /// cache next to the folder's state file, with each body at
 /// `cur/<hash>/<safe uid>`, where hash is bits 5 to 10 of `g_str_hash(uid)`
-/// in two hex digits (camel-data-cache.c, EDS 3.56 to 3.60).
+/// in two hex digits (camel-data-cache.c, EDS 3.56 to 3.62).
 fn cache_dir(folder: &camel::Folder) -> Option<std::path::PathBuf> {
     let state = folder.state_filename()?;
     Some(std::path::Path::new(state.as_str()).parent()?.join("cur"))
@@ -362,29 +362,6 @@ pub fn prune(folder: &camel::Folder, cutoff: i64, since: Option<i64>) -> usize {
         .count()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn layout() {
-        // Matches the 3.60 test run: uid "1" lives in cur/2e/1.
-        let f = cache_file(std::path::Path::new("/c"), "1").unwrap();
-        assert_eq!(f, std::path::Path::new("/c/2e/1"));
-    }
-
-    #[test]
-    fn labels() {
-        assert_eq!(Window::Last(TimeUnit::Days, 3).label(), "Last 3 days");
-        assert_eq!(Window::Last(TimeUnit::Weeks, 1).label(), "Last week");
-        assert_eq!(Refresh::Minutes(22).label(), "Every 22 minutes");
-        assert_eq!(Refresh::Minutes(120).label(), "Every 2 hours");
-        let now = glib::DateTime::from_unix_utc(1_000_000_000).unwrap();
-        assert_eq!(Window::Last(TimeUnit::Weeks, 1).cutoff(&now), Some(1_000_000_000 - 7 * 86_400));
-        assert_eq!(Window::AllTime.cutoff(&now), None);
-    }
-}
-
 /// IMAPX's `use-idle` setting, which covers IDLE and NOTIFY.
 pub fn read_push(registry: &SourceRegistry, account: &crate::Account) -> bool {
     if let Some(on) = PUSH_HELD.lock().unwrap().get(&account.uid) {
@@ -413,6 +390,21 @@ pub fn write_push(registry: &SourceRegistry, account: &crate::Account, on: bool)
 /// setting back for the length of every write.
 static PUSH_HELD: std::sync::Mutex<std::collections::BTreeMap<String, bool>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// EDS 3.62 made IMAPX's `check-all` default to true, which refreshes every
+/// folder on each check; accounts keep 3.60's false.
+pub fn keep_check_all_off(registry: &SourceRegistry, account: &crate::Account) {
+    if configured(&account.uid, "check-all") {
+        return;
+    }
+    let Ok(source) = source(registry, &account.uid) else { return };
+    let Some(s) = settings(&source, &account.backend_name).filter(|s| s.find_property("check-all").is_some()) else { return };
+    s.set_property("check-all", false);
+    match write_source(&source) {
+        Ok(()) => mark_configured(&account.uid, "check-all"),
+        Err(e) => glib::g_warning!("salutations", "Cannot save the folder check setting: {}", e),
+    }
+}
 
 fn idle_settings(source: &Source, backend: &str) -> Option<camel::OfflineSettings> {
     settings(source, backend).filter(|s| s.find_property("use-idle").is_some())
@@ -449,4 +441,27 @@ pub fn server(registry: &SourceRegistry, account: &crate::Account) -> Option<(St
     };
     let port = if port != 0 { port } else if tls == Some(true) { 993 } else { 143 };
     Some((host, port, tls))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layout() {
+        // Matches the 3.60 test run: uid "1" lives in cur/2e/1.
+        let f = cache_file(std::path::Path::new("/c"), "1").unwrap();
+        assert_eq!(f, std::path::Path::new("/c/2e/1"));
+    }
+
+    #[test]
+    fn labels() {
+        assert_eq!(Window::Last(TimeUnit::Days, 3).label(), "Last 3 days");
+        assert_eq!(Window::Last(TimeUnit::Weeks, 1).label(), "Last week");
+        assert_eq!(Refresh::Minutes(22).label(), "Every 22 minutes");
+        assert_eq!(Refresh::Minutes(120).label(), "Every 2 hours");
+        let now = glib::DateTime::from_unix_utc(1_000_000_000).unwrap();
+        assert_eq!(Window::Last(TimeUnit::Weeks, 1).cutoff(&now), Some(1_000_000_000 - 7 * 86_400));
+        assert_eq!(Window::AllTime.cutoff(&now), None);
+    }
 }

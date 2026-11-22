@@ -227,8 +227,8 @@ pub const E_DEBUG_LOG_DOMAIN_CAL_QUERIES: &[u8] = b"CalQueries\0";
 pub const E_DEBUG_LOG_DOMAIN_GLOG: &[u8] = b"GLog\0";
 pub const E_DEBUG_LOG_DOMAIN_USER: &[u8] = b"USER\0";
 pub const EDS_MAJOR_VERSION: c_int = 3;
-pub const EDS_MICRO_VERSION: c_int = 2;
-pub const EDS_MINOR_VERSION: c_int = 60;
+pub const EDS_MICRO_VERSION: c_int = 1;
+pub const EDS_MINOR_VERSION: c_int = 62;
 pub const E_NETWORK_MONITOR_ALWAYS_ONLINE_NAME: &[u8] = b"always-online\0";
 pub const E_OAUTH2_SECRET_ACCESS_TOKEN: &[u8] = b"access_token\0";
 pub const E_OAUTH2_SECRET_EXPIRES_AFTER: &[u8] = b"expires_after\0";
@@ -366,6 +366,9 @@ pub type ESourceRefreshFunc = Option<unsafe extern "C" fn(*mut ESource, gpointer
 pub type ETypeFunc = Option<unsafe extern "C" fn(GType, gpointer)>;
 pub type EWebDAVDiscoverRefSourceFunc = Option<unsafe extern "C" fn(gpointer, *const c_char) -> *mut ESource>;
 pub type EWebDAVPropstatTraverseFunc = Option<unsafe extern "C" fn(*mut EWebDAVSession, gpointer, *const glib::GUri, *const c_char, c_uint, gpointer) -> gboolean>;
+pub type EWebDAVSessionModifyReportRequestFunc = Option<unsafe extern "C" fn(*mut EWebDAVSession, *mut EXmlDocument, gpointer)>;
+pub type EWebDAVSessionResourceModifiedFunc = Option<unsafe extern "C" fn(*mut EWebDAVSession, *const c_char, *const c_char, gpointer, gpointer, *mut gio::GCancellable, *mut *mut glib::GError) -> gboolean>;
+pub type EWebDAVSessionResourceRemovedFunc = Option<unsafe extern "C" fn(*mut EWebDAVSession, *const c_char, gpointer, *mut gio::GCancellable, *mut *mut glib::GError) -> gboolean>;
 pub type EXmlHashFunc = Option<unsafe extern "C" fn(*const c_char, *const c_char, gpointer)>;
 pub type EXmlHashRemoveFunc = Option<unsafe extern "C" fn(*const c_char, *const c_char, gpointer) -> gboolean>;
 
@@ -3288,7 +3291,7 @@ unsafe extern "C" {
     pub fn e_ms_oapxbc_get_type() -> GType;
     pub fn e_ms_oapxbc_new_sync(client_id: *const c_char, authority: *const c_char, cancellable: *mut gio::GCancellable, error: *mut *mut glib::GError) -> *mut EMsOapxbc;
     pub fn e_ms_oapxbc_acquire_prt_sso_cookie_sync(self_: *mut EMsOapxbc, account: gpointer, sso_url: *const c_char, scopes: gpointer, redirect_uri: *const c_char, cancellable: *mut gio::GCancellable, error: *mut *mut glib::GError) -> *mut soup::SoupCookie;
-    pub fn e_ms_oapxbc_get_accounts_sync(self_: *mut EMsOapxbc, cancellable: *mut gio::GCancellable, error: *mut *mut glib::GError) -> gpointer;
+    pub fn e_ms_oapxbc_get_accounts_sync(self_: *mut EMsOapxbc, redirect_uri: *const c_char, cancellable: *mut gio::GCancellable, error: *mut *mut glib::GError) -> gpointer;
 
     //=========================================================================
     // ENetworkMonitor
@@ -3337,6 +3340,9 @@ unsafe extern "C" {
     // ESoupAuthBearer
     //=========================================================================
     pub fn e_soup_auth_bearer_get_type() -> GType;
+    #[cfg(feature = "v3_62")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "v3_62")))]
+    pub fn e_soup_auth_bearer_clear_rejected(bearer: *mut ESoupAuthBearer);
     pub fn e_soup_auth_bearer_is_expired(bearer: *mut ESoupAuthBearer) -> gboolean;
     pub fn e_soup_auth_bearer_set_access_token(bearer: *mut ESoupAuthBearer, access_token: *const c_char, expires_in_seconds: c_int);
 
@@ -3728,11 +3734,17 @@ unsafe extern "C" {
     pub fn e_source_mail_composition_get_type() -> GType;
     pub fn e_source_mail_composition_dup_bcc(extension: *mut ESourceMailComposition) -> *mut *mut c_char;
     pub fn e_source_mail_composition_dup_cc(extension: *mut ESourceMailComposition) -> *mut *mut c_char;
+    #[cfg(feature = "v3_62")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "v3_62")))]
+    pub fn e_source_mail_composition_dup_composer_mode(extension: *mut ESourceMailComposition) -> *mut c_char;
     pub fn e_source_mail_composition_dup_drafts_folder(extension: *mut ESourceMailComposition) -> *mut c_char;
     pub fn e_source_mail_composition_dup_language(extension: *mut ESourceMailComposition) -> *mut c_char;
     pub fn e_source_mail_composition_dup_templates_folder(extension: *mut ESourceMailComposition) -> *mut c_char;
     pub fn e_source_mail_composition_get_bcc(extension: *mut ESourceMailComposition) -> *const *const c_char;
     pub fn e_source_mail_composition_get_cc(extension: *mut ESourceMailComposition) -> *const *const c_char;
+    #[cfg(feature = "v3_62")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "v3_62")))]
+    pub fn e_source_mail_composition_get_composer_mode(extension: *mut ESourceMailComposition) -> *const c_char;
     pub fn e_source_mail_composition_get_drafts_folder(extension: *mut ESourceMailComposition) -> *const c_char;
     pub fn e_source_mail_composition_get_language(extension: *mut ESourceMailComposition) -> *const c_char;
     pub fn e_source_mail_composition_get_reply_style(extension: *mut ESourceMailComposition) -> ESourceMailCompositionReplyStyle;
@@ -3742,6 +3754,9 @@ unsafe extern "C" {
     pub fn e_source_mail_composition_get_top_signature(extension: *mut ESourceMailComposition) -> EThreeState;
     pub fn e_source_mail_composition_set_bcc(extension: *mut ESourceMailComposition, bcc: *const *const c_char);
     pub fn e_source_mail_composition_set_cc(extension: *mut ESourceMailComposition, cc: *const *const c_char);
+    #[cfg(feature = "v3_62")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "v3_62")))]
+    pub fn e_source_mail_composition_set_composer_mode(extension: *mut ESourceMailComposition, composer_mode: *const c_char);
     pub fn e_source_mail_composition_set_drafts_folder(extension: *mut ESourceMailComposition, drafts_folder: *const c_char);
     pub fn e_source_mail_composition_set_language(extension: *mut ESourceMailComposition, language: *const c_char);
     pub fn e_source_mail_composition_set_reply_style(extension: *mut ESourceMailComposition, reply_style: ESourceMailCompositionReplyStyle);
@@ -4004,10 +4019,19 @@ unsafe extern "C" {
     //=========================================================================
     pub fn e_source_selectable_get_type() -> GType;
     pub fn e_source_selectable_dup_color(extension: *mut ESourceSelectable) -> *mut c_char;
+    #[cfg(feature = "v3_62")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "v3_62")))]
+    pub fn e_source_selectable_dup_groups(extension: *mut ESourceSelectable) -> *mut c_char;
     pub fn e_source_selectable_get_color(extension: *mut ESourceSelectable) -> *const c_char;
+    #[cfg(feature = "v3_62")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "v3_62")))]
+    pub fn e_source_selectable_get_groups(extension: *mut ESourceSelectable) -> *const c_char;
     pub fn e_source_selectable_get_order(extension: *mut ESourceSelectable) -> c_uint;
     pub fn e_source_selectable_get_selected(extension: *mut ESourceSelectable) -> gboolean;
     pub fn e_source_selectable_set_color(extension: *mut ESourceSelectable, color: *const c_char);
+    #[cfg(feature = "v3_62")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "v3_62")))]
+    pub fn e_source_selectable_set_groups(extension: *mut ESourceSelectable, groups: *const c_char);
     pub fn e_source_selectable_set_order(extension: *mut ESourceSelectable, order: c_uint);
     pub fn e_source_selectable_set_selected(extension: *mut ESourceSelectable, selected: gboolean);
 
@@ -4090,6 +4114,9 @@ unsafe extern "C" {
     //=========================================================================
     pub fn e_webdav_session_get_type() -> GType;
     pub fn e_webdav_session_new(source: *mut ESource) -> *mut EWebDAVSession;
+    #[cfg(feature = "v3_62")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "v3_62")))]
+    pub fn e_webdav_session_util_contains_supported_report(prop_node: gpointer, report_ns: *const c_char, report_name: *const c_char) -> gboolean;
     pub fn e_webdav_session_util_free_privileges(privileges: *mut glib::GNode);
     pub fn e_webdav_session_util_item_href_equal(href1: *const c_char, href2: *const c_char) -> gboolean;
     pub fn e_webdav_session_util_maybe_dequote(text: *mut c_char) -> *mut c_char;
@@ -4128,6 +4155,9 @@ unsafe extern "C" {
     pub fn e_webdav_session_replace_with_detailed_error(webdav: *mut EWebDAVSession, message: *mut soup::SoupMessage, response_data: *const glib::GByteArray, ignore_multistatus: gboolean, prefix: *const c_char, error: *mut *mut glib::GError) -> gboolean;
     pub fn e_webdav_session_report_sync(webdav: *mut EWebDAVSession, uri: *const c_char, depth: *const c_char, xml: *const EXmlDocument, func: EWebDAVPropstatTraverseFunc, func_user_data: gpointer, out_content_type: *mut *mut c_char, out_content: *mut *mut glib::GByteArray, cancellable: *mut gio::GCancellable, error: *mut *mut glib::GError) -> gboolean;
     pub fn e_webdav_session_set_acl_sync(webdav: *mut EWebDAVSession, uri: *const c_char, entries: *const glib::GSList, cancellable: *mut gio::GCancellable, error: *mut *mut glib::GError) -> gboolean;
+    #[cfg(feature = "v3_62")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "v3_62")))]
+    pub fn e_webdav_session_sync_collection_sync(webdav: *mut EWebDAVSession, uri: *const c_char, sync_token: *const c_char, modify_report_request: EWebDAVSessionModifyReportRequestFunc, resource_modified: EWebDAVSessionResourceModifiedFunc, resource_removed: EWebDAVSessionResourceRemovedFunc, user_data: gpointer, out_new_sync_token: *mut *mut c_char, cancellable: *mut gio::GCancellable, error: *mut *mut glib::GError) -> gboolean;
     pub fn e_webdav_session_traverse_mkcalendar_response(webdav: *mut EWebDAVSession, message: *mut soup::SoupMessage, xml_data: *const glib::GByteArray, func: EWebDAVPropstatTraverseFunc, func_user_data: gpointer, error: *mut *mut glib::GError) -> gboolean;
     pub fn e_webdav_session_traverse_mkcol_response(webdav: *mut EWebDAVSession, message: *mut soup::SoupMessage, xml_data: *const glib::GByteArray, func: EWebDAVPropstatTraverseFunc, func_user_data: gpointer, error: *mut *mut glib::GError) -> gboolean;
     pub fn e_webdav_session_traverse_multistatus_response(webdav: *mut EWebDAVSession, message: *mut soup::SoupMessage, xml_data: *const glib::GByteArray, func: EWebDAVPropstatTraverseFunc, func_user_data: gpointer, error: *mut *mut glib::GError) -> gboolean;

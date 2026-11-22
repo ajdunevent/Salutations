@@ -3825,7 +3825,8 @@ pub struct CamelStoreClass {
     pub synchronize_sync: Option<unsafe extern "C" fn(*mut CamelStore, gboolean, *mut gio::GCancellable, *mut *mut glib::GError) -> gboolean>,
     pub initial_setup_sync: Option<unsafe extern "C" fn(*mut CamelStore, *mut glib::GHashTable, *mut gio::GCancellable, *mut *mut glib::GError) -> gboolean>,
     pub get_can_auto_save_changes: Option<unsafe extern "C" fn(*mut CamelStore) -> gboolean>,
-    pub reserved_methods: [gpointer; 19],
+    pub search_multimailbox_sync: Option<unsafe extern "C" fn(*mut CamelStore, *mut glib::GPtrArray, *const c_char, *const glib::GPtrArray, *mut *mut glib::GHashTable, *mut gio::GCancellable, *mut *mut glib::GError) -> gboolean>,
+    pub reserved_methods: [gpointer; 18],
     pub folder_created: Option<unsafe extern "C" fn(*mut CamelStore, *mut CamelFolderInfo)>,
     pub folder_deleted: Option<unsafe extern "C" fn(*mut CamelStore, *mut CamelFolderInfo)>,
     pub folder_opened: Option<unsafe extern "C" fn(*mut CamelStore, *mut CamelFolder)>,
@@ -3852,6 +3853,7 @@ impl ::std::fmt::Debug for CamelStoreClass {
          .field("synchronize_sync", &self.synchronize_sync)
          .field("initial_setup_sync", &self.initial_setup_sync)
          .field("get_can_auto_save_changes", &self.get_can_auto_save_changes)
+         .field("search_multimailbox_sync", &self.search_multimailbox_sync)
          .field("reserved_methods", &self.reserved_methods)
          .field("folder_created", &self.folder_created)
          .field("folder_deleted", &self.folder_deleted)
@@ -7229,8 +7231,16 @@ unsafe extern "C" {
     //=========================================================================
     pub fn camel_data_cache_get_type() -> GType;
     pub fn camel_data_cache_new(path: *const c_char, error: *mut *mut glib::GError) -> *mut CamelDataCache;
-    pub fn camel_data_cache_add(cdc: *mut CamelDataCache, path: *const c_char, key: *const c_char, error: *mut *mut glib::GError) -> *mut gio::GIOStream;
+    #[cfg(feature = "v3_62")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "v3_62")))]
+    pub fn camel_data_cache_add_atomic(cdc: *mut CamelDataCache, path: *const c_char, key: *const c_char, error: *mut *mut glib::GError) -> *mut gio::GIOStream;
     pub fn camel_data_cache_clear(cdc: *mut CamelDataCache, path: *const c_char);
+    #[cfg(feature = "v3_62")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "v3_62")))]
+    pub fn camel_data_cache_commit_atomic(cdc: *mut CamelDataCache, stream: *mut gio::GIOStream, error: *mut *mut glib::GError) -> *mut gio::GIOStream;
+    #[cfg(feature = "v3_62")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "v3_62")))]
+    pub fn camel_data_cache_discard_atomic(cdc: *mut CamelDataCache, stream: *mut gio::GIOStream);
     pub fn camel_data_cache_foreach_remove(cdc: *mut CamelDataCache, path: *const c_char, func: CamelDataCacheRemoveFunc, user_data: gpointer);
     pub fn camel_data_cache_get(cdc: *mut CamelDataCache, path: *const c_char, key: *const c_char, error: *mut *mut glib::GError) -> *mut gio::GIOStream;
     pub fn camel_data_cache_get_expire_enabled(cdc: *mut CamelDataCache) -> gboolean;
@@ -7883,7 +7893,6 @@ unsafe extern "C" {
     pub fn camel_mime_parser_scan_from(parser: *mut CamelMimeParser, scan_from: gboolean);
     pub fn camel_mime_parser_scan_pre_from(parser: *mut CamelMimeParser, scan_pre_from: gboolean);
     pub fn camel_mime_parser_seek(parser: *mut CamelMimeParser, offset: i64, whence: c_int) -> i64;
-    pub fn camel_mime_parser_set_header_regex(parser: *mut CamelMimeParser, matchstr: *mut c_char) -> c_int;
     pub fn camel_mime_parser_state(parser: *mut CamelMimeParser) -> CamelMimeParserState;
     pub fn camel_mime_parser_step(parser: *mut CamelMimeParser, databuffer: *mut *mut u8, datalength: *mut size_t) -> CamelMimeParserState;
     pub fn camel_mime_parser_stream(parser: *mut CamelMimeParser) -> *mut CamelStream;
@@ -8028,6 +8037,9 @@ unsafe extern "C" {
     pub fn camel_partition_table_add(cpi: *mut CamelPartitionTable, key: *const c_char, keyid: camel_key_t) -> c_int;
     pub fn camel_partition_table_lookup(cpi: *mut CamelPartitionTable, key: *const c_char) -> camel_key_t;
     pub fn camel_partition_table_remove(cpi: *mut CamelPartitionTable, key: *const c_char) -> gboolean;
+    #[cfg(feature = "v3_62")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "v3_62")))]
+    pub fn camel_partition_table_set_key_table(cpi: *mut CamelPartitionTable, key_table: *mut CamelKeyTable);
     pub fn camel_partition_table_sync(cpi: *mut CamelPartitionTable) -> c_int;
 
     //=========================================================================
@@ -8278,6 +8290,9 @@ unsafe extern "C" {
     pub fn camel_store_rename_folder(store: *mut CamelStore, old_name: *const c_char, new_name: *const c_char, io_priority: c_int, cancellable: *mut gio::GCancellable, callback: gio::GAsyncReadyCallback, user_data: gpointer);
     pub fn camel_store_rename_folder_finish(store: *mut CamelStore, result: *mut gio::GAsyncResult, error: *mut *mut glib::GError) -> gboolean;
     pub fn camel_store_rename_folder_sync(store: *mut CamelStore, old_name: *const c_char, new_name: *const c_char, cancellable: *mut gio::GCancellable, error: *mut *mut glib::GError) -> gboolean;
+    #[cfg(feature = "v3_62")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "v3_62")))]
+    pub fn camel_store_search_multimailbox_sync(store: *mut CamelStore, folders: *mut glib::GPtrArray, search_key: *const c_char, words: *const glib::GPtrArray, out_results: *mut *mut glib::GHashTable, cancellable: *mut gio::GCancellable, error: *mut *mut glib::GError) -> gboolean;
     pub fn camel_store_set_flags(store: *mut CamelStore, flags: u32);
     pub fn camel_store_set_permissions(store: *mut CamelStore, permissions: u32);
     pub fn camel_store_synchronize(store: *mut CamelStore, expunge: gboolean, io_priority: c_int, cancellable: *mut gio::GCancellable, callback: gio::GAsyncReadyCallback, user_data: gpointer);

@@ -193,8 +193,10 @@ pub struct Book {
 pub struct Contacts {
     sources: Vec<SendSource>,
     /// Each connected book with its source.
-    clients: Arc<Mutex<Option<Vec<(SendSource, SendObject)>>>>,
+    clients: Arc<Mutex<Option<Vec<Client>>>>,
 }
+
+type Client = (SendSource, SendObject);
 
 struct SendSource(Source);
 // ESource and EBookClient are thread-safe GObjects; EDS uses them from

@@ -26,6 +26,11 @@ CONSTANTS = {
     "E_WEBDAV_COLLATION_OCTET": "i;octet",
     "E_WEBDAV_COLLATION_UNICODE_CASEMAP": "i;unicode-casemap",
 }
+# Backported to 3.60.2, but 3.62's files say 3.62.
+BACKPORTED = {
+    "camel_util_is_network_error": "3.60.2",
+    "EOAuth2ServiceError": "3.60.2",
+}
 DROPPABLE = {"function", "method", "constructor", "virtual-method",
              "callback", "property", "signal", "glib:signal"}
 
@@ -141,6 +146,10 @@ def fix(path):
             t.set("name", "gpointer")
             t.set(C_TYPE, "gpointer" + "*" * (stars - 1))
             retyped += 1
+        elif name.startswith("libxml2.") and ctype.endswith("Ptr"):
+            t.set("name", "gpointer")
+            t.set(C_TYPE, "gpointer")
+            retyped += 1
 
     for t in tree.iter("{%s}type" % CORE):
         if t.get(C_TYPE) == "CamelVeeDataCache*" and t.get("name") == "VeeFolder":
@@ -178,6 +187,11 @@ def fix(path):
         if base.startswith("_") and base[1:] in records:
             t.set(C_TYPE, ctype.replace(base, base[1:], 1))
             retyped += 1
+
+    for el in tree.iter():
+        name = el.get("{%s}identifier" % NS["c"]) or el.get(C_TYPE)
+        if name in BACKPORTED and el.get("version"):
+            el.set("version", BACKPORTED[name])
 
     tree.write(path, encoding="UTF-8", xml_declaration=True)
     print(f"{path}: dropped {dropped}, patched {patched} fields, "

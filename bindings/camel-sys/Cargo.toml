@@ -16,6 +16,9 @@ version = "3.60.2"
 [package.metadata.system-deps.camel_1_2.v3_58]
 version = "3.58"
 
+[package.metadata.system-deps.camel_1_2.v3_62]
+version = "3.62"
+
 [package.metadata.docs.rs]
 rustdoc-args = ["--generate-link-to-definition"]
 all-features = true
@@ -45,3 +48,4 @@ tempfile = "3"
 [features]
 v3_60_2 = ["v3_58"]
 v3_58 = []
+v3_62 = ["v3_60_2"]

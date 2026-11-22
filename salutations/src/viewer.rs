@@ -140,6 +140,7 @@ unsafe impl<T> Send for Handoff<T> {}
 
 type ShownHandler = Rc<dyn Fn(&camel::Folder, &str)>;
 type LinkAction = Box<dyn Fn(&Rc<Viewer>)>;
+type AddressFor = Box<dyn Fn(&camel::Folder) -> Option<String>>;
 
 pub struct Viewer {
     pub widget: gtk::Stack,
@@ -173,7 +174,7 @@ pub struct Viewer {
     /// Loosens tracking removal after content failed to load without it.
     loosen: gtk::Button,
     /// The address of the account a folder belongs to.
-    account_address: RefCell<Option<Box<dyn Fn(&camel::Folder) -> Option<String>>>>,
+    account_address: RefCell<Option<AddressFor>>,
     actions: gio::SimpleActionGroup,
     web: webkit::WebView,
     shown: RefCell<Option<Shown>>,
@@ -944,7 +945,7 @@ impl Viewer {
             .unwrap_or_default();
         self.date.set_text(&date);
         self.compact_subject.set_text(&self.subject.text());
-        self.compact_from.set_text(&sender.map(Address::display).unwrap_or_default());
+        self.compact_from.set_text(sender.map(Address::display).unwrap_or_default());
         self.compact_date.set_text(&date);
         self.set_compact(Settings::get().compact_headers);
         self.important.set_visible(r.important);

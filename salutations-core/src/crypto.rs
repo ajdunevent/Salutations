@@ -108,12 +108,14 @@ fn unescape_colons(s: &str) -> String {
     let b = s.as_bytes();
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'\\' && i + 3 < b.len() && b[i + 1] == b'x' {
-            if let Ok(v) = u8::from_str_radix(&s[i + 2..i + 4], 16) {
-                out.push(v);
-                i += 4;
-                continue;
-            }
+        if b[i] == b'\\'
+            && i + 3 < b.len()
+            && b[i + 1] == b'x'
+            && let Some(v) = std::str::from_utf8(&b[i + 2..i + 4]).ok().and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(v);
+            i += 4;
+            continue;
         }
         out.push(b[i]);
         i += 1;
@@ -603,5 +605,12 @@ mod tests {
     #[test]
     fn key_ids() {
         assert_eq!(key_id_in("gpg: using EDDSA key 0123456789ABCDEF0123").as_deref(), Some("0123456789ABCDEF0123"));
+    }
+
+    #[test]
+    fn colon_escapes() {
+        assert_eq!(unescape_colons(r"Jordan\x3a Lee"), "Jordan: Lee");
+        assert_eq!(unescape_colons(r"Zoë \xé1"), r"Zoë \xé1");
+        assert_eq!(unescape_colons(r"end \x3"), r"end \x3");
     }
 }

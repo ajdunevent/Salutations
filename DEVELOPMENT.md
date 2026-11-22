@@ -17,7 +17,7 @@ inbox.
 | `salutations-core` | GTK-free mail engine: session, GOA account discovery, credentials, certificate trust, the sync engine, message rendering, link and tracking checks, sender verification, avatars, the remote content cache, offline sync, settings, and the protocol between the two processes |
 | `salutations-daemon` | The `salutations` command: the background process, without GTK. It owns the accounts and Camel, syncs, notifies, runs rules, sends waiting mail, and starts the window process |
 | `salutations` | The `salutations-window` command: the GTK4/libadwaita window, started by the background process |
-| `gir-files` | GIR inputs: gtk-rs's GLib/GObject/Gio, and Fedora 44's EDS 3.60 files patched by `scripts/fix-girs.py` |
+| `gir-files` | GIR inputs: gtk-rs's GLib/GObject/Gio, and EDS 3.62.1's files patched by `scripts/fix-girs.py` |
 | `scripts` | Binding regeneration, Flatpak crate list, development builds |
 | `build-aux` | Flatpak manifest and its crate list |
 | `salutations/data` | Desktop file, AppStream metainfo (also read by the About dialog), icons, stylesheet |
@@ -74,10 +74,11 @@ librsvg, all from the GNOME runtime.
 ## Building and running
 
 EDS 3.56 is the minimum. Camel's C API changed in 3.58 (libcamel is
-.so.64 in 3.56, .so.67 in 3.60). The bindings are generated from 3.60
-with 3.56 as the oldest version, so the generated API added since then
-is behind the `v3_58` and `v3_60` features, which Salutations does not
-use. The few calls it needs whose API changed are in
+.so.64 in 3.56, .so.67 in 3.60, .so.68 in 3.62). The bindings are
+generated from 3.62.1 with 3.56 as the oldest version, so the generated
+API added since then is behind the `v3_58`, `v3_60`, `v3_60_2`, and
+`v3_62` features, which Salutations does not use. The few calls it needs
+whose API changed are in
 `bindings/camel/src/compat.rs`, and the `camel` crate's build script
 picks the 3.56 or 3.58 form from the installed Camel version.
 
@@ -132,8 +133,8 @@ A round trip against a throwaway keyring:
 ### Flatpak
 
 `build-aux/net.dunevent.Salutations.json` builds Salutations on the GNOME
-50 runtime together with what the runtime lacks: libical, the GNOME
-Online Accounts client library, evolution-data-server 3.60.2 (Camel and
+51 runtime together with what the runtime lacks: libical, the GNOME
+Online Accounts client library, evolution-data-server 3.62.1 (Camel and
 the client libraries; the sandboxed app uses the host's source registry
 and address books over D-Bus), and libspelling. Crates come from `build-aux/cargo-sources.json`, so Cargo
 builds offline; run `scripts/update-cargo-sources.sh` after any change to
@@ -189,7 +190,7 @@ stderr; `CAMEL_DEBUG=imapx:io` adds the IMAP traffic.
 The two test crates compare every struct layout and constant in the
 bindings against the installed C headers. Run them after every EDS
 update; a failure means the bindings need regenerating. They describe
-EDS 3.60 and fail against older headers, whose structs differ; the app
+EDS 3.62 and fail against older headers, whose structs differ; the app
 reads none of the structs that differ.
 
 Camel's state goes to `~/.local/share/salutations` and
@@ -214,6 +215,12 @@ The gir revision is the one gtk-rs-core 0.22.9 pins, matching the
 `glib 0.22` crates. The script copies the system `.gir` files into
 `gir-files/`, patches them, and reruns gir on all four crates. A new EDS
 release can need another case in `fix-girs.py`; the ABI tests show where.
+`SYSGIR` names another folder holding `Camel-1.2.gir`,
+`EDataServer-1.2.gir`, `Soup-3.0.gir`, and `Json-1.0.gir`. The Flatpak
+builds EDS without introspection, so its `.gir` files come from a build
+of the same release with `-DENABLE_INTROSPECTION=ON` (the
+`src/camel/Camel-1.2.gir` and `src/libedataserver/EDataServer-1.2.gir`
+targets).
 
 ## Findings
 
@@ -304,9 +311,13 @@ These shaped `salutations-core` and the app and apply to all later work.
 - `camel_offline_store_prepare_for_offline()` downloads only messages a
   folder's summary already knows, so a folder never opened gets nothing.
   The window refreshes each synced folder before downloading.
-- The 3.60 header declares `camel_offline_settings_set_limit_value()`
+- The header declares `camel_offline_settings_set_limit_value()`
   with a `gboolean`, and gir follows it; the value is an integer and is
   set through the C function.
+- EDS 3.62 changed IMAPX's `check-all` default from false to true, which
+  refreshes every folder on each check. An account whose source has no
+  `CheckAll` key would pick that up, so Salutations writes false once per
+  account.
 - Camel has no public call to drop one cached body. `offline::prune()`
   deletes the file itself: an IMAPX folder's data cache sits next to its
   state file, each body at `cur/<hash>/<safe uid>` with hash bits 5 to 10
@@ -324,8 +335,9 @@ These shaped `salutations-core` and the app and apply to all later work.
 Milestone 1 passed against a GOA "IMAP and SMTP" account. The OAuth2
 path has not run against a real account yet.
 
-The app is tested in the GNOME 50 SDK (GTK 4.22, libadwaita 1.9,
-WebKitGTK 2.54, EDS 3.60.2) on a virtual display, against a local
-Dovecot server through a non-GOA EDS source. The EDS 3.56 path is tested
+The app is tested in the GNOME 51 SDK (GTK 4.24, libadwaita 1.10,
+WebKitGTK 2.54, EDS 3.62.1) on a virtual display, against a local
+Dovecot server through a non-GOA EDS source, with a 3.60.2 source
+registry standing in for a host with an older EDS. The EDS 3.56 path is tested
 the same way with Debian trixie's 3.56.2 Camel, EDataServer, and IMAPX
 provider in place of the SDK's.

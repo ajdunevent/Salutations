@@ -20,3 +20,4 @@ gio_v2_26 = []
 # The generated API newer than 3.56.
 v3_60 = ["ffi/v3_60"]
 v3_60_2 = ["v3_60", "ffi/v3_60_2"]
+v3_62 = ["v3_60_2", "ffi/v3_62"]

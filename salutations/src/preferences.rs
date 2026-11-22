@@ -671,6 +671,7 @@ fn accounts_page(
 
 /// An account UID, its row, and the row's up and down buttons.
 type AccountRow = (String, adw::ActionRow, gtk::Button, gtk::Button);
+type Refill = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 
 fn account_subpage(
     registry: &SourceRegistry,
@@ -729,7 +730,7 @@ fn sending_groups(account: &Account) -> Vec<adw::PreferencesGroup> {
     sending.add(&aliases);
     let add = adw::EntryRow::builder().title("Add an address").show_apply_button(true).build();
     let rows: Rc<RefCell<Vec<adw::ActionRow>>> = Rc::default();
-    let refill: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::default();
+    let refill: Refill = Rc::default();
     let fill = {
         let (account, aliases, add, rows, refill) = (account.clone(), aliases.clone(), add.clone(), rows.clone(), refill.clone());
         Rc::new(move || {
@@ -1294,27 +1295,13 @@ fn receiving_group(registry: &SourceRegistry, entry: AccountEntry, title: &str, 
     group
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn heights() {
-        assert_eq!(dialog_height(600), 600);
-        assert_eq!(dialog_height(685), 685);
-        assert_eq!(dialog_height(700), 685);
-        assert_eq!(dialog_height(720), 685);
-        assert_eq!(dialog_height(800), 760);
-    }
-}
-
 /// Senders and domains whose remote content is always shown, each with a
 /// remove button, and Remove All, which also forgets the messages allowed
 /// one at a time.
 fn remote_allowed_row() -> adw::ExpanderRow {
     let expander = adw::ExpanderRow::builder().title("Remote content allowed for").build();
     let rows: Rc<RefCell<Vec<gtk::Widget>>> = Rc::default();
-    let refill: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::default();
+    let refill: Refill = Rc::default();
     let fill = {
         let (expander, rows, refill) = (expander.clone(), rows.clone(), refill.clone());
         Rc::new(move || {
@@ -1405,4 +1392,18 @@ fn remote_allowed_row() -> adw::ExpanderRow {
     *refill.borrow_mut() = Some(fill.clone());
     fill();
     expander
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn heights() {
+        assert_eq!(dialog_height(600), 600);
+        assert_eq!(dialog_height(685), 685);
+        assert_eq!(dialog_height(700), 685);
+        assert_eq!(dialog_height(720), 685);
+        assert_eq!(dialog_height(800), 760);
+    }
 }

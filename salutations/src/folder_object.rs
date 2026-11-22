@@ -37,6 +37,9 @@ mod imp {
         pub sync_state: Cell<SyncState>,
         #[property(get, set)]
         pub sync_message: RefCell<String>,
+        /// Messages waiting to be sent after a failed attempt.
+        #[property(get, set)]
+        pub unsent: Cell<u32>,
         pub children: OnceCell<gio::ListStore>,
     }
 

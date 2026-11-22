@@ -117,8 +117,8 @@
             "sources": [
                 {
                     "type": "archive",
-                    "url": "https://download.gnome.org/sources/evolution-data-server/3.60/evolution-data-server-3.60.2.tar.xz",
-                    "sha256": "2084dbdac396371b365d504c1ff45866ba8dca2f1252e5da1d3d9c33abdc1286"
+                    "url": "https://download.gnome.org/sources/evolution-data-server/3.62/evolution-data-server-3.62.1.tar.xz",
+                    "sha256": "b75c823445d7d30bca797eee929809e8d389abbb8d471f68ae2af60972779f26"
                 }
             ]
         },

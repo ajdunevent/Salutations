@@ -58,6 +58,7 @@ pub enum Kind {
 }
 
 type Handler = Rc<dyn Fn()>;
+type AccountHandler = Rc<dyn Fn(String)>;
 
 /// How a message is protected; the protection menu's choices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,7 +129,7 @@ pub struct Composer {
     froms: RefCell<Vec<FromChoice>>,
     /// The account the message is from, as last loaded or chosen.
     account: RefCell<String>,
-    on_account: RefCell<Option<Rc<dyn Fn(String)>>>,
+    on_account: RefCell<Option<AccountHandler>>,
     to: Rc<RecipientField>,
     cc: Rc<RecipientField>,
     bcc: Rc<RecipientField>,

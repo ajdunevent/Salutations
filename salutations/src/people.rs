@@ -49,6 +49,7 @@ struct Bound {
 const PHOTO_SIZE: i32 = 96;
 
 type Key = (String, String);
+type Slots<T> = RefCell<HashMap<String, Slot<T>>>;
 
 #[derive(Default)]
 struct Index {
@@ -314,7 +315,7 @@ impl Index {
     /// state now.
     fn slot<T: Clone + 'static>(
         self: &Rc<Self>,
-        map: fn(&Index) -> &RefCell<HashMap<String, Slot<T>>>,
+        map: fn(&Index) -> &Slots<T>,
         key: &str,
         fut: impl std::future::Future<Output = Option<T>> + 'static,
     ) -> Slot<T> {

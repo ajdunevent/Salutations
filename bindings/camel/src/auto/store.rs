@@ -311,6 +311,13 @@ pub trait StoreExt: IsA<Store> + 'static {
         }
     }
 
+    //#[cfg(feature = "v3_62")]
+    //#[cfg_attr(docsrs, doc(cfg(feature = "v3_62")))]
+    //#[doc(alias = "camel_store_search_multimailbox_sync")]
+    //fn search_multimailbox_sync(&self, folders: &[Folder], search_key: &str, words: &[&str], out_results: /*Unknown conversion*//*Unimplemented*/HashTable TypeId { ns_id: 0, id: 28 }/TypeId { ns_id: 0, id: 52 }, cancellable: Option<&impl IsA<gio::Cancellable>>) -> Result<(), glib::Error> {
+    //    unsafe { TODO: call ffi:camel_store_search_multimailbox_sync() }
+    //}
+
     #[doc(alias = "camel_store_set_flags")]
     fn set_flags(&self, flags: u32) {
         unsafe {

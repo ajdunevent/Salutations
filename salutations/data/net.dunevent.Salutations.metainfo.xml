@@ -70,6 +70,15 @@
   </screenshots>
 
   <releases>
+    <release version="0.3.2" date="2026-11-21">
+      <description>
+        <p>Mail that could not be sent is easier to deal with.</p>
+        <ul>
+          <li>An account's sync button shows a warning when mail could not be sent, and opens a list with the reason and options to edit, delete, or retry</li>
+          <li>Evolution Data Server 3.62.1, with security fixes</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.1" date="2026-11-21">
       <description>
         <p>Notifications say which account new mail is in.</p>
