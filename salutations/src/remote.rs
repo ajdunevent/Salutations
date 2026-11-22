@@ -91,7 +91,7 @@ pub enum Request {
     Compose(String),
     Import(Vec<String>),
     /// A notification's button: kind, account, message.
-    Notification(String, String, String),
+    Notification(String, String, String, String),
     /// The waiting draft being sent for an account, or none.
     Outbox(String, Option<String>),
     Toast(String),
@@ -161,13 +161,6 @@ impl AccountState {
         self.info.borrow().connected
     }
 
-    /// INBOX, once the background process has it open.
-    pub fn inbox(&self) -> Option<Folder> {
-        if !self.info.borrow().inbox {
-            return None;
-        }
-        Folder::open_sync(&self.account.uid, "INBOX").ok()
-    }
 }
 
 type Listener = Box<dyn Fn(&Event)>;
@@ -349,8 +342,8 @@ impl Engine {
             "compose" => self.request(Request::Compose(data.get::<String>().unwrap_or_default())),
             "import" => self.request(Request::Import(data.get::<Vec<String>>().unwrap_or_default())),
             "notification" => {
-                if let Some((k, a, u)) = data.get::<(String, String, String)>() {
-                    self.request(Request::Notification(k, a, u));
+                if let Some((k, a, f, u)) = data.get::<(String, String, String, String)>() {
+                    self.request(Request::Notification(k, a, f, u));
                 }
             }
             "outbox" => {
@@ -860,6 +853,18 @@ impl Store {
 
     pub fn create_folder_sync(&self, parent: Option<&str>, name: &str, _c: Option<&gio::Cancellable>) -> Result<(), glib::Error> {
         call_sync("create_folder", args((self.account.clone(), parent.unwrap_or_default().to_string(), name.to_string()))).map(|_| ())
+    }
+
+    /// Renames or moves the folder `old` to the full name `new`.
+    pub async fn rename_folder(&self, old: &str, new: &str) -> Result<(), glib::Error> {
+        call("rename_folder", args((self.account.clone(), old.to_string(), new.to_string()))).await.map(|_| ())
+    }
+
+    /// Deletes `path` and its subfolders, their messages moved to Trash
+    /// first; how many were moved.
+    pub async fn delete_folder(&self, path: &str) -> Result<u32, glib::Error> {
+        let v = call("delete_folder", args((self.account.clone(), path.to_string()))).await?;
+        Ok(v.get::<u32>().unwrap_or(0))
     }
 }
 

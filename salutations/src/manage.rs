@@ -36,7 +36,26 @@ pub struct FolderChoice {
 
 /// Lets the user pick a folder; None when the dialog is closed.
 pub async fn pick_folder(parent: &impl IsA<gtk::Widget>, title: &str, folders: Vec<FolderChoice>) -> Option<FolderChoice> {
-    let (tx, rx) = futures_channel::oneshot::channel::<Option<FolderChoice>>();
+    match pick(parent, title, folders, false).await? {
+        Picked::Folder(f) => Some(f),
+        Picked::New => None,
+    }
+}
+
+/// What the move picker returned.
+pub enum Picked {
+    Folder(FolderChoice),
+    /// New folder… was pressed.
+    New,
+}
+
+/// The move picker, with New folder… in its header bar.
+pub async fn pick_folder_or_new(parent: &impl IsA<gtk::Widget>, title: &str, folders: Vec<FolderChoice>) -> Option<Picked> {
+    pick(parent, title, folders, true).await
+}
+
+async fn pick(parent: &impl IsA<gtk::Widget>, title: &str, folders: Vec<FolderChoice>, offer_new: bool) -> Option<Picked> {
+    let (tx, rx) = futures_channel::oneshot::channel::<Option<Picked>>();
     let tx = std::rc::Rc::new(std::cell::RefCell::new(Some(tx)));
     let list = folder_list(&folders, gtk::SelectionMode::None);
     let scrolled = gtk::ScrolledWindow::builder()
@@ -44,8 +63,9 @@ pub async fn pick_folder(parent: &impl IsA<gtk::Widget>, title: &str, folders: V
         .propagate_natural_height(true)
         .child(&list)
         .build();
+    let header = adw::HeaderBar::new();
     let view = adw::ToolbarView::new();
-    view.add_top_bar(&adw::HeaderBar::new());
+    view.add_top_bar(&header);
     view.set_content(Some(&scrolled));
     let dialog = adw::Dialog::builder()
         .title(title)
@@ -53,16 +73,104 @@ pub async fn pick_folder(parent: &impl IsA<gtk::Widget>, title: &str, folders: V
         .content_height(480)
         .child(&view)
         .build();
+    if offer_new {
+        let new = gtk::Button::builder().icon_name("folder-new-symbolic").tooltip_text("New folder…").build();
+        header.pack_start(&new);
+        let (d, t) = (dialog.clone(), tx.clone());
+        new.connect_clicked(move |_| {
+            if let Some(tx) = t.borrow_mut().take() {
+                let _ = tx.send(Some(Picked::New));
+            }
+            d.close();
+        });
+    }
     let d = dialog.clone();
     let t = tx.clone();
     list.connect_row_activated(move |_, row| {
-        let choice = folders.get(row.index() as usize).filter(|f| !f.heading).cloned();
-        if choice.is_none() {
-            return;
-        }
+        let Some(choice) = folders.get(row.index() as usize).filter(|f| !f.heading).cloned() else { return };
         if let Some(tx) = t.borrow_mut().take() {
-            let _ = tx.send(choice);
+            let _ = tx.send(Some(Picked::Folder(choice)));
         }
+        d.close();
+    });
+    dialog.connect_closed(move |_| {
+        if let Some(tx) = tx.borrow_mut().take() {
+            let _ = tx.send(None);
+        }
+    });
+    dialog.present(Some(parent));
+    rx.await.ok().flatten()
+}
+
+/// Lets the user check any number of the folders, given as (full name,
+/// path) pairs with paths joined by " / ", with `chosen` checked to
+/// start. None when cancelled.
+pub async fn pick_folders(parent: &impl IsA<gtk::Widget>, title: &str, folders: &[(String, String)], chosen: &[String]) -> Option<Vec<String>> {
+    let (tx, rx) = futures_channel::oneshot::channel::<Option<Vec<String>>>();
+    let tx = std::rc::Rc::new(std::cell::RefCell::new(Some(tx)));
+    let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).build();
+    list.add_css_class("navigation-sidebar");
+    let checks: Vec<(String, gtk::CheckButton)> = folders
+        .iter()
+        .map(|(full, path)| {
+            let depth = path.matches(" / ").count();
+            let name = path.rsplit(" / ").next().unwrap_or(path);
+            let check = gtk::CheckButton::builder()
+                .active(chosen.iter().any(|c| c.eq_ignore_ascii_case(full)))
+                .valign(gtk::Align::Center)
+                .build();
+            let label = gtk::Label::builder().label(name).xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).build();
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+            row.set_margin_start(6 + 18 * depth as i32);
+            row.set_margin_top(6);
+            row.set_margin_bottom(6);
+            row.append(&check);
+            row.append(&label);
+            let lbr = gtk::ListBoxRow::builder().child(&row).activatable(true).build();
+            lbr.update_property(&[gtk::accessible::Property::Label(path)]);
+            let c = check.clone();
+            lbr.connect_activate(move |_| c.set_active(!c.is_active()));
+            list.append(&lbr);
+            (full.clone(), check)
+        })
+        .collect();
+    list.connect_row_activated(|_, row| {
+        row.emit_activate();
+    });
+    let scrolled = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .propagate_natural_height(true)
+        .vexpand(true)
+        .child(&list)
+        .build();
+    let cancel = gtk::Button::with_mnemonic("_Cancel");
+    let done = gtk::Button::builder().use_underline(true).label("_Done").css_classes(["suggested-action"]).build();
+    let header = adw::HeaderBar::builder().show_start_title_buttons(false).show_end_title_buttons(false).build();
+    header.pack_start(&cancel);
+    header.pack_end(&done);
+    let view = adw::ToolbarView::new();
+    view.add_top_bar(&header);
+    view.set_content(Some(&scrolled));
+    let dialog = adw::Dialog::builder().title(title).content_width(360).content_height(480).child(&view).build();
+    let update = {
+        let (done, checks) = (done.clone(), checks.clone());
+        move || done.set_sensitive(checks.iter().any(|(_, c)| c.is_active()))
+    };
+    update();
+    for (_, c) in &checks {
+        let u = update.clone();
+        c.connect_active_notify(move |_| u());
+    }
+    let (d, t) = (dialog.clone(), tx.clone());
+    done.connect_clicked(move |_| {
+        let picked: Vec<String> = checks.iter().filter(|(_, c)| c.is_active()).map(|(f, _)| f.clone()).collect();
+        if let Some(tx) = t.borrow_mut().take() {
+            let _ = tx.send(Some(picked));
+        }
+        d.close();
+    });
+    let d = dialog.clone();
+    cancel.connect_clicked(move |_| {
         d.close();
     });
     dialog.connect_closed(move |_| {

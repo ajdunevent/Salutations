@@ -34,7 +34,7 @@ use std::path::PathBuf;
 
 pub use accounts::{Account, mail_accounts, watch_mail_accounts};
 pub use render::{Address, Rendered};
-pub use session::{Session, SpecialFolders};
+pub use session::{Role, Session, SpecialFolders};
 pub use settings::{AttachKey, ComposePrefs, DEFAULT_KEYSERVER, ImportKeys, Settings, SyncPrefs};
 
 pub use camel;
@@ -81,4 +81,29 @@ pub fn init() -> Result<(), glib::Error> {
         ));
     }
     Ok(())
+}
+
+/// `path` after the folder `old` was renamed or moved to `new`: `path`
+/// itself or one of its parents. None when `path` is not under `old`.
+pub fn renamed_path(path: &str, old: &str, new: &str) -> Option<String> {
+    if path == old {
+        return Some(new.to_string());
+    }
+    path.strip_prefix(old).and_then(|rest| rest.strip_prefix('/')).map(|rest| format!("{new}/{rest}"))
+}
+
+/// Whether `path` is the folder `folder` or inside it.
+pub fn within(path: &str, folder: &str) -> bool {
+    path == folder || path.strip_prefix(folder).is_some_and(|rest| rest.starts_with('/'))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn folder_paths() {
+        assert_eq!(super::renamed_path("A/B/C", "A/B", "X/B").as_deref(), Some("X/B/C"));
+        assert_eq!(super::renamed_path("A/B", "A/B", "Y").as_deref(), Some("Y"));
+        assert_eq!(super::renamed_path("A/Bee", "A/B", "Y"), None);
+        assert!(super::within("A/B", "A") && !super::within("AB", "A"));
+    }
 }

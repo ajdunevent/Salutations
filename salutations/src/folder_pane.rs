@@ -20,6 +20,22 @@ pub struct DraggedMessages {
     pub thread: bool,
 }
 
+/// What a folder row drag carries; it never leaves the process.
+#[derive(Clone, glib::Boxed)]
+#[boxed_type(name = "SalutationsDraggedFolder")]
+pub struct DraggedFolder {
+    pub account_uid: String,
+    pub full_name: String,
+}
+
+/// What a drop on a folder or account row brings.
+pub enum Dropped {
+    Messages(DraggedMessages),
+    /// A folder, to go under the row's folder, or to the top for an
+    /// account row.
+    Folder(DraggedFolder),
+}
+
 /// How long a drag must rest on a collapsed row before it expands.
 const EXPAND_DELAY_MS: u64 = 700;
 
@@ -34,15 +50,18 @@ impl FolderPane {
     /// `on_folder` gets each newly selected folder; `on_pick` runs when the
     /// user clicks or activates a folder row, even the selected one;
     /// `on_sync` gets an account row's sync button presses; `on_drop` gets
-    /// messages dropped on a folder; `on_files` gets files dropped on one.
+    /// messages or a folder dropped on a row; `on_files` gets files dropped
+    /// on a folder; `movable` says which folders can be dragged.
     pub fn new(
         on_folder: impl Fn(&FolderObject) + 'static,
         on_pick: impl Fn() + 'static,
         on_sync: impl Fn(&FolderObject, &gtk::Button) + 'static,
-        on_drop: impl Fn(&FolderObject, DraggedMessages) + 'static,
+        on_drop: impl Fn(&FolderObject, Dropped) + 'static,
         on_files: impl Fn(&FolderObject, Vec<gio::File>) + 'static,
         on_menu: impl Fn(&FolderObject, &gtk::Widget, f64, f64) + 'static,
+        movable: impl Fn(&FolderObject) -> bool + 'static,
     ) -> Rc<Self> {
+        let movable: Rc<dyn Fn(&FolderObject) -> bool> = Rc::new(movable);
         let on_menu: MenuHandler = Rc::new(on_menu);
         let on_drop: DropHandler = Rc::new(on_drop);
         let on_files: FilesHandler = Rc::new(on_files);
@@ -86,10 +105,8 @@ impl FolderPane {
                         return;
                     };
                     let Some(w) = g.widget() else { return };
-                    if !obj.is_account() {
-                        g.set_state(gtk::EventSequenceState::Claimed);
-                        on_menu(&obj, &w, x, y);
-                    }
+                    g.set_state(gtk::EventSequenceState::Claimed);
+                    on_menu(&obj, &w, x, y);
                 };
                 if let Some(c) = gesture.downcast_ref::<gtk::GestureClick>() {
                     c.connect_pressed(move |g, _, x, y| fire(g.upcast_ref(), x, y));
@@ -99,6 +116,7 @@ impl FolderPane {
                 expander.add_controller(gesture);
             }
             expander.add_controller(drop_target(item, on_drop.clone()));
+            expander.add_controller(folder_drag(item, movable.clone()));
             expander.add_controller(file_drop_target(item, on_files.clone()));
             item.set_child(Some(&expander));
         });
@@ -177,21 +195,69 @@ fn row_of(item: &gtk::ListItem) -> Option<(gtk::TreeListRow, FolderObject)> {
     Some((row, obj))
 }
 
-fn dragged(target: &gtk::DropTarget) -> Option<DraggedMessages> {
-    target.value()?.get::<DraggedMessages>().ok()
+fn dragged(target: &gtk::DropTarget) -> Option<Dropped> {
+    let value = target.value()?;
+    value
+        .get::<DraggedMessages>()
+        .map(Dropped::Messages)
+        .or_else(|_| value.get::<DraggedFolder>().map(Dropped::Folder))
+        .ok()
 }
 
-/// Whether `m` can be moved to the folder `obj`: any folder but the one
-/// the messages are in, in any account.
-fn accepts(obj: &FolderObject, m: &DraggedMessages) -> bool {
-    !obj.is_account()
-        && !(obj.account_uid() == m.account_uid && m.folder.full_name().as_deref() == Some(obj.full_name().as_str()))
+/// Whether the row `obj` takes the drop: messages go to any folder but
+/// their own, in any account; a folder goes under another folder of its
+/// account (not itself or one of its own) or to the account's top level,
+/// where it is not already.
+fn accepts(obj: &FolderObject, d: &Dropped) -> bool {
+    match d {
+        Dropped::Messages(m) => {
+            !obj.is_account()
+                && !(obj.account_uid() == m.account_uid && m.folder.full_name().as_deref() == Some(obj.full_name().as_str()))
+        }
+        Dropped::Folder(f) => {
+            let parent = f.full_name.rsplit_once('/').map_or("", |(p, _)| p);
+            obj.account_uid() == f.account_uid
+                && !salutations_core::within(&obj.full_name(), &f.full_name)
+                && if obj.is_account() { !parent.is_empty() } else { obj.full_name() != parent }
+        }
+    }
 }
 
-/// Takes message drags; a collapsed row expands after the drag rests on
-/// it.
+/// Starts a drag of a folder row, with the mouse or touchpad only: on
+/// touch a long press opens the row's menu.
+fn folder_drag(item: &gtk::ListItem, movable: Rc<dyn Fn(&FolderObject) -> bool>) -> gtk::DragSource {
+    let drag = gtk::DragSource::new();
+    drag.set_actions(gdk::DragAction::MOVE);
+    let weak = item.downgrade();
+    let label: Rc<RefCell<String>> = Rc::default();
+    let l = label.clone();
+    drag.connect_prepare(move |src, _, _| {
+        if src.current_event_device().is_some_and(|d| d.source() == gdk::InputSource::Touchscreen) {
+            return None;
+        }
+        let (_, obj) = row_of(&weak.upgrade()?)?;
+        if obj.is_account() || !movable(&obj) {
+            return None;
+        }
+        *l.borrow_mut() = obj.title();
+        let value = DraggedFolder { account_uid: obj.account_uid(), full_name: obj.full_name() }.to_value();
+        Some(gdk::ContentProvider::for_value(&value))
+    });
+    drag.connect_drag_begin(move |_, d| {
+        let text = gtk::Label::new(Some(label.borrow().as_str()));
+        text.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        text.set_max_width_chars(40);
+        text.add_css_class("drag-label");
+        gtk::DragIcon::for_drag(d).set_child(Some(&text));
+    });
+    drag
+}
+
+/// Takes message and folder drags; a collapsed row expands after the
+/// drag rests on it.
 fn drop_target(item: &gtk::ListItem, on_drop: DropHandler) -> gtk::DropTarget {
-    let target = gtk::DropTarget::new(DraggedMessages::static_type(), gdk::DragAction::MOVE);
+    let target = gtk::DropTarget::new(glib::Type::INVALID, gdk::DragAction::MOVE);
+    target.set_types(&[DraggedMessages::static_type(), DraggedFolder::static_type()]);
     // The value is needed before the drop to refuse the messages' own folder.
     target.set_preload(true);
     let timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::default();
@@ -210,7 +276,7 @@ fn drop_target(item: &gtk::ListItem, on_drop: DropHandler) -> gtk::DropTarget {
                 .upgrade()
                 .and_then(|i| row_of(&i))
                 .zip(dragged(t))
-                .is_some_and(|((_, obj), m)| accepts(&obj, &m));
+                .is_some_and(|((_, obj), d)| accepts(&obj, &d));
             if ok { gdk::DragAction::MOVE } else { gdk::DragAction::empty() }
         }
     };
@@ -237,12 +303,19 @@ fn drop_target(item: &gtk::ListItem, on_drop: DropHandler) -> gtk::DropTarget {
     let item = item.downgrade();
     target.connect_drop(move |_, value, _, _| {
         stop();
-        let (Some(item), Ok(m)) = (item.upgrade(), value.get::<DraggedMessages>()) else { return false };
+        let Some(item) = item.upgrade() else { return false };
+        let dropped = match value.get::<DraggedMessages>() {
+            Ok(m) => Dropped::Messages(m),
+            Err(_) => match value.get::<DraggedFolder>() {
+                Ok(f) => Dropped::Folder(f),
+                Err(_) => return false,
+            },
+        };
         let Some((_, obj)) = row_of(&item) else { return false };
-        if !accepts(&obj, &m) {
+        if !accepts(&obj, &dropped) {
             return false;
         }
-        on_drop(&obj, m);
+        on_drop(&obj, dropped);
         true
     });
     target
@@ -275,7 +348,7 @@ fn is_folder_row(item: &gtk::ListItem) -> bool {
 
 type SyncHandler = Rc<dyn Fn(&FolderObject, &gtk::Button)>;
 type MenuHandler = Rc<dyn Fn(&FolderObject, &gtk::Widget, f64, f64)>;
-type DropHandler = Rc<dyn Fn(&FolderObject, DraggedMessages)>;
+type DropHandler = Rc<dyn Fn(&FolderObject, Dropped)>;
 type FilesHandler = Rc<dyn Fn(&FolderObject, Vec<gio::File>)>;
 
 fn row_widget(obj: &FolderObject, on_sync: SyncHandler) -> gtk::Widget {

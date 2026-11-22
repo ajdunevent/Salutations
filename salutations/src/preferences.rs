@@ -3,16 +3,15 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use crate::mail::camel;
 use salutations_core::edataserver::SourceRegistry;
 use salutations_core::offline::{self, Download, OfflineSync, Refresh, TimeUnit, Window as AgeWindow};
 use salutations_core::{Account, Settings};
 
+pub use crate::folder_prefs::FolderHooks;
+
 /// What the Accounts page needs about one account.
 pub struct AccountEntry {
     pub account: Account,
-    /// None until the account has been opened.
-    pub store: Option<camel::Store>,
     /// Folder full names with their displayed paths, in tree order.
     pub folders: Vec<(String, String)>,
 }
@@ -260,8 +259,10 @@ pub fn show(
     accounts: Vec<AccountEntry>,
     on_account: AccountChanged,
     apply_rule: crate::rule_editor::ApplyRule,
-    open_account: Option<&str>,
+    folder_hooks: FolderHooks,
+    open: Option<(&str, Option<&str>)>,
 ) {
+    let (open_account, open_folder) = (open.map(|(a, _)| a), open.and_then(|(_, f)| f));
     let settings = Settings::get();
     let current = match (settings.mark_read, settings.read_on_response) {
         (false, _) => ReadDelay::Never,
@@ -396,7 +397,7 @@ pub fn show(
     // The account's row, to open its settings at once.
     let mut open_row = None;
     if !accounts.is_empty() {
-        let (page, rows) = accounts_page(&dialog, registry, accounts, on_account, apply_rule);
+        let (page, rows) = accounts_page(&dialog, registry, accounts, on_account, apply_rule, &folder_hooks);
         dialog.add(&page);
         if let Some(uid) = open_account {
             dialog.set_visible_page(&page);
@@ -517,6 +518,9 @@ pub fn show(
     if let Some(row) = open_row {
         row.emit_activate();
     }
+    if let (Some(uid), Some(path)) = (open_account, open_folder) {
+        crate::folder_prefs::open_at(&dialog, uid, path, &folder_hooks);
+    }
 }
 
 fn window_days(w: AgeWindow) -> Option<f64> {
@@ -536,6 +540,7 @@ fn accounts_page(
     accounts: Vec<AccountEntry>,
     on_account: AccountChanged,
     apply_rule: crate::rule_editor::ApplyRule,
+    folder_hooks: &FolderHooks,
 ) -> (adw::PreferencesPage, Rc<RefCell<Vec<AccountRow>>>) {
     let page = adw::PreferencesPage::builder()
         .title("Accounts")
@@ -559,6 +564,7 @@ fn accounts_page(
         let account = entry.account.clone();
         let folders = entry.folders.clone();
         page.add(&receiving_group(registry, entry, &title, on_account));
+        page.add(&crate::folder_prefs::folders_group(dialog, &account.uid, folder_hooks));
         for g in sending_groups(&account) {
             page.add(&g);
         }
@@ -653,14 +659,14 @@ fn accounts_page(
         let subpage: RefCell<Option<adw::NavigationPage>> = RefCell::new(None);
         let entry = RefCell::new(Some(entry));
         let (dialog, registry, on_account) = (dialog.downgrade(), registry.clone(), on_account.clone());
-        let apply_rule = apply_rule.clone();
+        let (apply_rule, hooks) = (apply_rule.clone(), folder_hooks.clone());
         row.connect_activated(move |_| {
             let Some(dialog) = dialog.upgrade() else { return };
             let page = subpage
                 .borrow_mut()
                 .get_or_insert_with(|| {
                     let entry = entry.borrow_mut().take().expect("built once");
-                    account_subpage(&registry, entry, on_account.clone(), apply_rule.clone())
+                    account_subpage(&dialog, &registry, entry, on_account.clone(), apply_rule.clone(), &hooks)
                 })
                 .clone();
             dialog.push_subpage(&page);
@@ -674,16 +680,19 @@ type AccountRow = (String, adw::ActionRow, gtk::Button, gtk::Button);
 type Refill = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 
 fn account_subpage(
+    dialog: &adw::PreferencesDialog,
     registry: &SourceRegistry,
     entry: AccountEntry,
     on_account: AccountChanged,
     apply_rule: crate::rule_editor::ApplyRule,
+    folder_hooks: &FolderHooks,
 ) -> adw::NavigationPage {
     let name = entry.account.display_name();
     let account = entry.account.clone();
     let folders = entry.folders.clone();
     let page = adw::PreferencesPage::new();
     page.add(&receiving_group(registry, entry, "Receiving", on_account));
+    page.add(&crate::folder_prefs::folders_group(dialog, &account.uid, folder_hooks));
     for g in sending_groups(&account) {
         page.add(&g);
     }
@@ -1199,18 +1208,12 @@ fn receiving_group(registry: &SourceRegistry, entry: AccountEntry, title: &str, 
         .selected(if current.all_folders { 0 } else { 1 })
         .build();
     group.add(&scope);
-    let folders = adw::ExpanderRow::builder()
-        .title("Folders")
-        .visible(!current.all_folders)
-        .build();
-    group.add(&folders);
 
     let save = {
         let registry = registry.clone();
         let account = entry.account.clone();
         let scope = scope.clone();
         let age = age.clone();
-        let folders = folders.clone();
         let on_account = on_account.clone();
         Rc::new(move || {
             let download = age.value(&|n| Download::Within(AgeWindow::Last(TimeUnit::Days, n as i32)));
@@ -1228,7 +1231,6 @@ fn receiving_group(registry: &SourceRegistry, entry: AccountEntry, title: &str, 
                 }
             }
             let sync = OfflineSync { all_folders: scope.selected() == 0, window };
-            folders.set_visible(!sync.all_folders);
             if let Err(e) = offline::write(&registry, &account, &sync) {
                 glib::g_warning!("salutations", "Cannot save offline settings: {}", e);
                 return;
@@ -1246,52 +1248,6 @@ fn receiving_group(registry: &SourceRegistry, entry: AccountEntry, title: &str, 
         },
     );
 
-    // Folders are opened only when the list is shown; each switch
-    // reads and writes the folder's offline state.
-    let Some(store) = entry.store else {
-        folders.set_sensitive(false);
-        folders.set_subtitle("Available once the account has been opened");
-        return group;
-    };
-    let filled = std::cell::Cell::new(false);
-    let list = entry.folders;
-    let uid = entry.account.uid.clone();
-    let on_account = on_account.clone();
-    folders.connect_expanded_notify(move |row| {
-        if !row.is_expanded() || filled.replace(true) {
-            return;
-        }
-        for (full_name, path) in &list {
-            let check = gtk::CheckButton::builder().valign(gtk::Align::Center).sensitive(false).build();
-            let folder_row = adw::ActionRow::builder()
-                .title(glib::markup_escape_text(path))
-                .activatable_widget(&check)
-                .build();
-            folder_row.add_prefix(&check);
-            row.add_row(&folder_row);
-            let (store, full_name) = (store.clone(), full_name.clone());
-            let (uid, on_account) = (uid.clone(), on_account.clone());
-            let inbox = full_name.eq_ignore_ascii_case("INBOX");
-            glib::spawn_future_local(async move {
-                let Ok(Some(folder)) = store
-                    .folder_future(&full_name, camel::StoreGetFolderFlags::empty(), glib::ffi::G_PRIORITY_DEFAULT)
-                    .await
-                else {
-                    folder_row.set_subtitle("Cannot be opened");
-                    return;
-                };
-                check.set_active(inbox || folder.synced());
-                check.set_sensitive(!inbox);
-                if inbox {
-                    folder_row.set_subtitle("Required");
-                }
-                check.connect_active_notify(move |c| {
-                    folder.set_synced(c.is_active());
-                    on_account(&uid, AccountChange::Offline);
-                });
-            });
-        }
-    });
     group
 }
 

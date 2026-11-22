@@ -265,7 +265,7 @@ impl Session {
             archive: get("Account:Mail Account:archive-folder:f"),
             junk: get("Backend:Imapx Backend:real-junk-path:s"),
             trash: get("Backend:Imapx Backend:real-trash-path:s"),
-            archive_chosen: false,
+            chosen: 0,
         })
     }
 
@@ -287,6 +287,34 @@ impl Session {
 
 const PRIORITY: i32 = glib::ffi::G_PRIORITY_DEFAULT;
 
+/// A special-use folder's role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Sent,
+    Drafts,
+    Archive,
+    Junk,
+    Trash,
+}
+
+impl Role {
+    pub const ALL: [Role; 5] = [Role::Sent, Role::Drafts, Role::Archive, Role::Junk, Role::Trash];
+
+    fn bit(self) -> u32 {
+        1 << self as u32
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Role::Sent => "Sent",
+            Role::Drafts => "Drafts",
+            Role::Archive => "Archive",
+            Role::Junk => "Junk",
+            Role::Trash => "Trash",
+        }
+    }
+}
+
 /// Full names of the account's special-use folders.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SpecialFolders {
@@ -295,8 +323,9 @@ pub struct SpecialFolders {
     pub archive: Option<String>,
     pub junk: Option<String>,
     pub trash: Option<String>,
-    /// The user chose `archive`; the server's answer does not replace it.
-    pub archive_chosen: bool,
+    /// Roles (bits of [`Role`]) the user chose; the server's answer does
+    /// not replace them.
+    pub chosen: u32,
 }
 
 fn special_path() -> std::path::PathBuf {
@@ -310,13 +339,53 @@ impl SpecialFolders {
         [&mut self.sent, &mut self.drafts, &mut self.archive, &mut self.junk, &mut self.trash]
     }
 
-    /// The server's answer, keeping an Archive folder the user chose.
+    /// The server's answer, keeping the folders the user chose.
     pub fn merged(mut self, saved: Option<&SpecialFolders>) -> SpecialFolders {
-        if let Some(saved) = saved.filter(|s| s.archive_chosen) {
-            self.archive = saved.archive.clone();
-            self.archive_chosen = true;
+        if let Some(saved) = saved {
+            for role in Role::ALL {
+                if saved.chosen & role.bit() != 0 {
+                    self.set(role, saved.get(role).map(str::to_string));
+                }
+            }
         }
         self
+    }
+
+    pub fn get(&self, role: Role) -> Option<&str> {
+        match role {
+            Role::Sent => self.sent.as_deref(),
+            Role::Drafts => self.drafts.as_deref(),
+            Role::Archive => self.archive.as_deref(),
+            Role::Junk => self.junk.as_deref(),
+            Role::Trash => self.trash.as_deref(),
+        }
+    }
+
+    /// Gives `role` to `folder` (None: no folder), as the user's choice.
+    pub fn set(&mut self, role: Role, folder: Option<String>) {
+        let field = match role {
+            Role::Sent => &mut self.sent,
+            Role::Drafts => &mut self.drafts,
+            Role::Archive => &mut self.archive,
+            Role::Junk => &mut self.junk,
+            Role::Trash => &mut self.trash,
+        };
+        *field = folder;
+        self.chosen |= role.bit();
+    }
+
+    /// The role `folder` has, if any.
+    pub fn role_of(&self, folder: &str) -> Option<Role> {
+        Role::ALL.into_iter().find(|r| self.get(*r).is_some_and(|f| f.eq_ignore_ascii_case(folder)))
+    }
+
+    /// Follows a folder renamed or moved from `old` to `new`.
+    pub fn renamed(&mut self, old: &str, new: &str) {
+        for field in self.fields() {
+            if let Some(p) = field.as_deref().and_then(|f| crate::renamed_path(f, old, new)) {
+                *field = Some(p);
+            }
+        }
     }
 
     /// The folders saved for `account_uid` by an earlier session, so the
@@ -331,7 +400,10 @@ impl SpecialFolders {
         for (key, field) in Self::KEYS.iter().zip(s.fields()) {
             *field = kf.string(account_uid, key).ok().map(|v| v.to_string()).filter(|v| !v.is_empty());
         }
-        s.archive_chosen = kf.boolean(account_uid, "archive-chosen").unwrap_or(false);
+        s.chosen = kf.integer(account_uid, "chosen").map(|v| v as u32).unwrap_or(0);
+        if kf.boolean(account_uid, "archive-chosen").unwrap_or(false) {
+            s.chosen |= Role::Archive.bit();
+        }
         Some(s)
     }
 
@@ -343,7 +415,8 @@ impl SpecialFolders {
         for (key, field) in Self::KEYS.iter().zip(s.fields()) {
             kf.set_string(account_uid, key, field.as_deref().unwrap_or(""));
         }
-        kf.set_boolean(account_uid, "archive-chosen", self.archive_chosen);
+        kf.set_integer(account_uid, "chosen", self.chosen as i32);
+        let _ = kf.remove_key(account_uid, "archive-chosen");
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }

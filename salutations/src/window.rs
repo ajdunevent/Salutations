@@ -26,6 +26,7 @@ use actions_bar::{ActionButtons, Place};
 
 mod actions_bar;
 mod compose;
+mod folders;
 mod import;
 mod keys;
 mod outbox;
@@ -55,11 +56,11 @@ struct Target {
 
 /// A notification's button, passed on by the background process.
 enum NoteAction {
-    Open { account: String, uid: String },
-    Delete { account: String, uid: String },
-    Junk { account: String, uid: String },
-    Reply { account: String, uid: String },
-    OpenInbox { account: String },
+    Open { account: String, folder: String, uid: String },
+    Delete { account: String, folder: String, uid: String },
+    Junk { account: String, folder: String, uid: String },
+    Reply { account: String, folder: String, uid: String },
+    OpenFolder { account: String, folder: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -264,6 +265,7 @@ impl Window {
             let w5 = weak.clone();
             let w6 = weak.clone();
             let w7 = weak.clone();
+            let w8 = weak.clone();
             let folders = FolderPane::new(
                 move |obj| {
                     if let Some(this) = w1.upgrade() {
@@ -283,9 +285,11 @@ impl Window {
                         this.sync_button_pressed(obj, button);
                     }
                 },
-                move |obj, m| {
-                    if let Some(this) = w4.upgrade() {
-                        this.dropped(obj, m);
+                move |obj, d| {
+                    let Some(this) = w4.upgrade() else { return };
+                    match d {
+                        crate::folder_pane::Dropped::Messages(m) => this.dropped(obj, m),
+                        crate::folder_pane::Dropped::Folder(f) => this.folder_dropped(obj, f),
                     }
                 },
                 move |obj, files| {
@@ -297,6 +301,10 @@ impl Window {
                     if let Some(this) = w7.upgrade() {
                         this.folder_menu(obj, widget, x, y);
                     }
+                },
+                move |obj| {
+                    let Some(this) = w8.upgrade() else { return false };
+                    this.ctl_of(&obj.account_uid()).is_some_and(|c| Self::changeable(&c, &obj.full_name()))
                 },
             );
             let list = MessageList::new();
@@ -1231,13 +1239,17 @@ impl Window {
     }
 
     fn show_preferences(self: &Rc<Self>, open_account: Option<&str>) {
+        self.show_preferences_at(open_account, None);
+    }
+
+    /// Preferences, at an account's page and one of its folders' pages.
+    fn show_preferences_at(self: &Rc<Self>, open_account: Option<&str>, open_folder: Option<&str>) {
         let entries = self
             .accounts
             .borrow()
             .iter()
             .map(|ctl| crate::preferences::AccountEntry {
                 account: ctl.account.clone(),
-                store: ctl.eng.store(),
                 folders: folder_paths(ctl),
             })
             .collect();
@@ -1259,7 +1271,9 @@ impl Window {
             let (Some(this), uid) = (weak.upgrade(), uid.to_string()) else { return };
             glib::spawn_future_local(async move { this.apply_rule_now(&uid, rule).await });
         });
-        crate::preferences::show(&self.window, &self.registry, entries, on_offline, apply_rule, open_account);
+        let folder_ops = self.folder_hooks();
+        let open = open_account.map(|a| (a, open_folder));
+        crate::preferences::show(&self.window, &self.registry, entries, on_offline, apply_rule, folder_ops, open);
     }
 
     /// Trash or Junk, for the account's folder `full_name`.
@@ -1287,32 +1301,6 @@ impl Window {
             self.empty_banner.set_button_label(Some(&format!("Empty {name}")));
         }
         self.empty_banner.set_revealed(shown.is_some());
-    }
-
-    /// The folder menu: Empty Trash or Empty Junk on those folders.
-    fn folder_menu(self: &Rc<Self>, obj: &FolderObject, widget: &gtk::Widget, x: f64, y: f64) {
-        let Some(ctl) = self.accounts.borrow().iter().find(|c| c.account.uid == obj.account_uid()).cloned() else { return };
-        let Some(name) = Self::emptiable(&ctl, &obj.full_name()) else { return };
-        let menu = gio::Menu::new();
-        let group = gio::SimpleActionGroup::new();
-        let empty = gio::SimpleAction::new("empty", None);
-        let (weak, obj) = (Rc::downgrade(self), obj.clone());
-        empty.connect_activate(move |_, _| {
-            if let Some(this) = weak.upgrade() {
-                this.empty_folder(&ctl, &obj.full_name());
-            }
-        });
-        group.add_action(&empty);
-        menu.append(Some(&format!("Empty {name}…")), Some("folder.empty"));
-        let popover = gtk::PopoverMenu::from_model(Some(&menu));
-        popover.insert_action_group("folder", Some(&group));
-        popover.set_parent(widget);
-        popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-        popover.connect_closed(|p| {
-            let p = p.clone();
-            glib::idle_add_local_once(move || p.unparent());
-        });
-        popover.popup();
     }
 
     /// Deletes every message in the account's Trash or Junk, after asking.
@@ -1632,6 +1620,7 @@ impl Window {
                 {
                     o.set_unread(n.unread);
                 }
+
                 counts(obj, &n.children, open);
             }
         }
@@ -1932,13 +1921,13 @@ impl Window {
                 self.window.present();
                 self.import_files(paths.iter().map(gio::File::for_path).collect(), None);
             }
-            Request::Notification(kind, account, uid) => {
+            Request::Notification(kind, account, folder, uid) => {
                 let action = match kind.as_str() {
-                    "open" => NoteAction::Open { account, uid },
-                    "reply" => NoteAction::Reply { account, uid },
-                    "delete" => NoteAction::Delete { account, uid },
-                    "junk" => NoteAction::Junk { account, uid },
-                    _ => NoteAction::OpenInbox { account },
+                    "open" => NoteAction::Open { account, folder, uid },
+                    "reply" => NoteAction::Reply { account, folder, uid },
+                    "delete" => NoteAction::Delete { account, folder, uid },
+                    "junk" => NoteAction::Junk { account, folder, uid },
+                    _ => NoteAction::OpenFolder { account, folder },
                 };
                 self.notification_action(action);
             }
@@ -1961,62 +1950,62 @@ impl Window {
 
     fn notification_action(self: &Rc<Self>, action: NoteAction) {
         use NoteAction as A;
-        let account = match &action {
-            A::Open { account, .. }
-            | A::Delete { account, .. }
-            | A::Junk { account, .. }
-            | A::Reply { account, .. }
-            | A::OpenInbox { account } => account.clone(),
+        let (account, path) = match &action {
+            A::Open { account, folder, .. }
+            | A::Delete { account, folder, .. }
+            | A::Junk { account, folder, .. }
+            | A::Reply { account, folder, .. }
+            | A::OpenFolder { account, folder } => (account.clone(), folder.clone()),
         };
         let Some(ctl) = self.accounts.borrow().iter().find(|c| c.account.uid == account).cloned() else { return };
-        let Some(inbox) = ctl.eng.inbox() else { return };
         let reply = matches!(action, A::Reply { .. });
-        match action {
-            A::Open { uid, .. } | A::Reply { uid, .. } => {
-                self.window.present();
-                let this = self.clone();
-                glib::spawn_future_local(async move {
-                    this.show_inbox(&ctl).await;
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let Ok(store) = this.engine.store_for(&ctl.eng) else { return };
+            let Ok(folder) = this.session.folder_future(&store, &path).await else { return };
+            match action {
+                A::Open { uid, .. } | A::Reply { uid, .. } => {
+                    this.window.present();
+                    this.show_folder(&ctl, &path).await;
                     // The reply starts once the viewer has the message.
                     if reply {
-                        *this.reply_when_shown.borrow_mut() = Some((inbox.clone(), uid.clone()));
+                        *this.reply_when_shown.borrow_mut() = Some((folder.clone(), uid.clone()));
                     }
-                    if this.list.folder().as_ref() == Some(&inbox) {
+                    if this.list.folder().as_ref() == Some(&folder) {
                         this.list.open_uid(&uid);
                         if this.inner.is_collapsed() {
                             this.inner.set_show_content(true);
                         }
                     }
-                });
-            }
-            A::OpenInbox { .. } => {
-                self.window.present();
-                let this = self.clone();
-                glib::spawn_future_local(async move { this.show_inbox(&ctl).await });
-            }
-            A::Delete { uid, .. } => {
-                // Deleting for good asks first, which needs the window.
-                if ctl.eng.special().as_ref().and_then(|s| s.trash.as_ref()).is_none() {
-                    self.window.present();
                 }
-                self.request(Op::Delete, Target { account: ctl, folder: inbox, uids: vec![uid], thread: false });
+                A::OpenFolder { .. } => {
+                    this.window.present();
+                    this.show_folder(&ctl, &path).await;
+                }
+                A::Delete { uid, .. } => {
+                    // Deleting for good asks first, which needs the window.
+                    if ctl.eng.special().as_ref().and_then(|s| s.trash.as_ref()).is_none() {
+                        this.window.present();
+                    }
+                    this.request(Op::Delete, Target { account: ctl, folder, uids: vec![uid], thread: false });
+                }
+                A::Junk { uid, .. } => {
+                    this.request(Op::Junk, Target { account: ctl, folder, uids: vec![uid], thread: false });
+                }
             }
-            A::Junk { uid, .. } => {
-                self.request(Op::Junk, Target { account: ctl, folder: inbox, uids: vec![uid], thread: false });
-            }
-        }
+        });
     }
 
-    /// Selects the account's INBOX in the folder pane and waits until its
-    /// list is shown.
-    async fn show_inbox(self: &Rc<Self>, ctl: &Rc<AccountCtl>) {
+    /// Selects the account's folder `path` in the folder pane (INBOX when
+    /// it is gone) and waits until its list is shown.
+    async fn show_folder(self: &Rc<Self>, ctl: &Rc<AccountCtl>, path: &str) {
         if self.search.bar.is_search_mode() {
             self.search.bar.set_search_mode(false);
         }
         if self.list.select_mode() {
             self.window.change_action_state("select-mode", &false.to_variant());
         }
-        let Some(obj) = ctl.obj.find("INBOX") else { return };
+        let Some(obj) = ctl.obj.find(path).or_else(|| ctl.obj.find("INBOX")) else { return };
         self.folders.select(&obj);
         let opening = self.opening.borrow_mut().take();
         if let Some(h) = opening {
@@ -2375,13 +2364,13 @@ impl Window {
                     let accounts = this.accounts.borrow().clone();
                     let choices = all_folder_choices(&accounts, None);
                     let title = if n == 1 { "Move message to" } else { "Move messages to" };
-                    let Some(dest) = manage::pick_folder(&this.window, title, choices).await else { return };
-                    let Some(dest_account) = accounts.iter().find(|a| a.account.uid == dest.account).cloned() else { return };
+                    let Some(source) = targets.first().map(|t| t.account.clone()) else { return };
+                    let Some((dest_account, full_name, path)) = this.pick_destination(title, choices, &source).await else { return };
                     for t in targets {
-                        if t.account.account.uid == dest.account && t.folder.full_name().as_deref() == Some(dest.full_name.as_str()) {
+                        if Rc::ptr_eq(&t.account, &dest_account) && t.folder.full_name().as_deref() == Some(full_name.as_str()) {
                             continue;
                         }
-                        this.transfer(&t, &dest_account, &dest.full_name, &format!("moved to {}", dest.path)).await;
+                        this.transfer(&t, &dest_account, &full_name, &format!("moved to {path}")).await;
                     }
                 }
                 Op::Read | Op::Star if targets.len() > 1 => {
@@ -2435,9 +2424,8 @@ impl Window {
                     (false, 1) => "Move message to",
                     _ => "Move messages to",
                 };
-                let Some(dest) = manage::pick_folder(&self.window, title, choices).await else { return };
-                let Some(dest_account) = accounts.iter().find(|a| a.account.uid == dest.account).cloned() else { return };
-                self.transfer(&t, &dest_account, &dest.full_name, &format!("moved to {}", dest.path)).await;
+                let Some((dest_account, full_name, path)) = self.pick_destination(title, choices, &t.account).await else { return };
+                self.transfer(&t, &dest_account, &full_name, &format!("moved to {path}")).await;
             }
             Op::Archive => {
                 let archive = t.account.eng.special().as_ref().and_then(|s| s.archive.clone());
@@ -2565,8 +2553,7 @@ impl Window {
             }
         };
         let mut special = ctl.eng.special().unwrap_or_default();
-        special.archive = Some(name.clone());
-        special.archive_chosen = true;
+        special.set(salutations_core::Role::Archive, Some(name.clone()));
         self.engine.set_special(&ctl.eng, special);
         // The tree gets the new folder, or the chosen one's archive icon.
         self.engine.refresh_folders(&ctl.eng).await;

@@ -151,7 +151,7 @@ pub struct Special {
     pub trash: String,
     pub junk: String,
     pub archive: String,
-    pub archive_chosen: bool,
+    pub chosen: u32,
 }
 
 impl Special {
@@ -166,7 +166,7 @@ impl Special {
                 trash: o(&s.trash),
                 junk: o(&s.junk),
                 archive: o(&s.archive),
-                archive_chosen: s.archive_chosen,
+                chosen: s.chosen,
             },
         }
     }
@@ -179,7 +179,7 @@ impl Special {
             trash: o(&self.trash),
             junk: o(&self.junk),
             archive: o(&self.archive),
-            archive_chosen: self.archive_chosen,
+            chosen: self.chosen,
         })
     }
 }

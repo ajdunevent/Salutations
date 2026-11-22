@@ -189,6 +189,27 @@ pub async fn edit(parent: &impl IsA<gtk::Widget>, account: &str, folders: &[(Str
     let name = adw::EntryRow::builder().title("Name").text(&rule.name).build();
     let naming = adw::PreferencesGroup::new();
     naming.add(&name);
+    // The folders whose new mail the rule runs on; empty is INBOX.
+    let scope: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(rule.scope.clone()));
+    let run_on = adw::ActionRow::builder().title("Run on").activatable(true).build();
+    run_on.set_subtitle(&glib::markup_escape_text(&scope_text(&rule.scope, folders)));
+    run_on.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+    {
+        let (scope, row, folders) = (scope.clone(), run_on.clone(), folders.to_vec());
+        run_on.connect_activated(move |r| {
+            let (scope, row, folders) = (scope.clone(), row.clone(), folders.clone());
+            let Some(root) = r.root() else { return };
+            glib::spawn_future_local(async move {
+                let current = scope.borrow().clone();
+                let chosen = if current.is_empty() { vec!["INBOX".to_string()] } else { current };
+                let Some(picked) = crate::manage::pick_folders(&root, "Run on", &folders, &chosen).await else { return };
+                let picked = if picked.len() == 1 && picked[0].eq_ignore_ascii_case("INBOX") { Vec::new() } else { picked };
+                row.set_subtitle(&glib::markup_escape_text(&scope_text(&picked, &folders)));
+                *scope.borrow_mut() = picked;
+            });
+        });
+    }
+    naming.add(&run_on);
     page.add(&naming);
 
     let conditions = adw::PreferencesGroup::builder().title("Conditions").build();
@@ -275,7 +296,8 @@ pub async fn edit(parent: &impl IsA<gtk::Widget>, account: &str, folders: &[(Str
     }
     page.add(&actions);
 
-    let delete = adw::ButtonRow::builder().title("_Delete rule").use_underline(true).css_classes(["destructive-action"]).build();
+    let delete = adw::ButtonRow::builder().title("_Delete rule").use_underline(true).build();
+    delete.add_css_class("destructive-action");
     if existing {
         let g = adw::PreferencesGroup::new();
         g.add(&delete);
@@ -302,6 +324,7 @@ pub async fn edit(parent: &impl IsA<gtk::Widget>, account: &str, folders: &[(Str
     let collect = {
         let (name, rows, matching) = (name.clone(), rows.clone(), matching.clone());
         let (read, star, file, stop) = (read.clone(), star.clone(), file.clone(), stop.clone());
+        let scope = scope.clone();
         move || -> Option<Rule> {
             let name = name.text().trim().to_string();
             let live: Vec<Rc<ConditionRow>> = rows.borrow().iter().filter(|r| r.row.parent().is_some()).cloned().collect();
@@ -327,6 +350,7 @@ pub async fn edit(parent: &impl IsA<gtk::Widget>, account: &str, folders: &[(Str
                 star: toggle(star.selected()),
                 file,
                 stop: stop.is_active(),
+                scope: scope.borrow().clone(),
             };
             (!rule.name.is_empty() && rule.does_anything()).then_some(rule)
         }
@@ -378,7 +402,25 @@ pub async fn edit(parent: &impl IsA<gtk::Widget>, account: &str, folders: &[(Str
     rx.await.unwrap_or(Edit::Cancel)
 }
 
-/// What a rule does, for its row: "Mark as read, Move to Receipts".
+/// A folder's path as shown, or its full name marked missing.
+fn path_of(full_name: &str, folders: &[(String, String)]) -> String {
+    folders.iter().find(|(n, _)| n == full_name).map_or_else(|| format!("{full_name} (missing)"), |(_, p)| p.clone())
+}
+
+/// The folders a rule runs on, as "Run on" shows them.
+fn scope_text(scope: &[String], folders: &[(String, String)]) -> String {
+    if scope.is_empty() {
+        return "Inbox".to_string();
+    }
+    let names: Vec<String> = scope.iter().map(|f| path_of(f, folders)).collect();
+    match names.len() {
+        1 | 2 => names.join(" and "),
+        n => format!("{}, and {} more", names[..2].join(", "), n - 2),
+    }
+}
+
+/// What a rule does, for its row: "Mark as read, Move to Receipts"; "In
+/// Lists: Mark as read" when it runs on folders other than Inbox.
 pub fn summary(rule: &Rule, folders: &[(String, String)]) -> String {
     let mut parts: Vec<String> = Vec::new();
     match rule.read {
@@ -395,10 +437,7 @@ pub fn summary(rule: &Rule, folders: &[(String, String)]) -> String {
         Some(Filing::Archive) => parts.push("Archive".into()),
         Some(Filing::Junk) => parts.push("Move to Junk".into()),
         Some(Filing::Trash) => parts.push("Move to Trash".into()),
-        Some(Filing::Folder(f)) => {
-            let path = folders.iter().find(|(n, _)| n == f).map_or(f.as_str(), |(_, p)| p.as_str());
-            parts.push(format!("Move to {path}"));
-        }
+        Some(Filing::Folder(f)) => parts.push(format!("Move to {}", path_of(f, folders))),
         None => {}
     }
     if rule.stop {
@@ -408,7 +447,15 @@ pub fn summary(rule: &Rule, folders: &[(String, String)]) -> String {
     if let Some(first) = s.get(..1) {
         s = first.to_uppercase() + &s[1..];
     }
-    s
+    if rule.scope.is_empty() {
+        s
+    } else {
+        let scope = match rule.scope.len() {
+            1 | 2 => scope_text(&rule.scope, folders),
+            n => format!("{n} folders"),
+        };
+        format!("In {scope}: {s}")
+    }
 }
 
 /// Asks whether to run a just-saved rule on the messages already in INBOX.
@@ -444,7 +491,7 @@ pub fn append(account: &str, rule: Rule) {
 pub fn group(account: &str, folders: Vec<(String, String)>, apply: ApplyRule) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::builder()
         .title("Rules")
-        .description("Run on new mail in Inbox, in this order")
+        .description("Run on new mail, in this order")
         .build();
     let state = Rc::new(GroupState {
         group: group.downgrade(),

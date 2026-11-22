@@ -1,5 +1,5 @@
-//! Message rules: per account, an ordered list run by Salutations on INBOX
-//! mail it has not seen yet. Kept in `~/.config/salutations/rules.ini`, one
+//! Message rules: per account, an ordered list run by Salutations on new
+//! mail in each rule's folders (INBOX unless chosen). Kept in `~/.config/salutations/rules.ini`, one
 //! group per rule, named `<account UID>:<position>`.
 
 use std::path::PathBuf;
@@ -71,6 +71,8 @@ pub struct Rule {
     pub file: Option<Filing>,
     /// Later rules are not tried on a message this rule matched.
     pub stop: bool,
+    /// The folders whose new mail the rule runs on; empty means INBOX.
+    pub scope: Vec<String>,
 }
 
 /// What the rules look at in one message.
@@ -186,6 +188,15 @@ impl Rule {
     pub fn does_anything(&self) -> bool {
         self.read.is_some() || self.star.is_some() || self.file.is_some()
     }
+
+    /// The folders the rule runs on.
+    pub fn folders(&self) -> Vec<String> {
+        if self.scope.is_empty() { vec!["INBOX".to_string()] } else { self.scope.clone() }
+    }
+
+    pub fn runs_in(&self, folder: &str) -> bool {
+        self.folders().iter().any(|f| f.eq_ignore_ascii_case(folder))
+    }
 }
 
 /// Runs `rules` in order on one message. Filing a message ends its run, as
@@ -216,7 +227,7 @@ pub fn apply(rules: &[Rule], facts: &Facts) -> Outcome {
 
 // Storage
 
-fn path() -> PathBuf {
+pub fn path() -> PathBuf {
     glib::user_config_dir().join("salutations").join("rules.ini")
 }
 
@@ -327,6 +338,7 @@ fn read_rule(kf: &glib::KeyFile, group: &str) -> Rule {
         star: toggle("star", "star", "unstar"),
         file,
         stop: kf.boolean(group, "stop").unwrap_or(false),
+        scope: kf.string_list(group, "scope").map(|l| l.iter().map(|f| f.to_string()).collect()).unwrap_or_default(),
     }
 }
 
@@ -334,11 +346,7 @@ fn write_rule(kf: &glib::KeyFile, group: &str, r: &Rule) {
     kf.set_string(group, "name", &r.name);
     kf.set_string(group, "match", if r.any { "any" } else { "all" });
     let conditions: Vec<String> = r.conditions.iter().map(encode).collect();
-    // GKeyFile's list syntax, written raw: glib's bindings have no
-    // set_string_list, and set_string would escape the separators.
-    let escape = |c: &str| c.replace('\\', "\\\\").replace(';', "\\;").replace('\t', "\\t").replace('\n', "\\n");
-    let raw: String = conditions.iter().map(|c| format!("{};", escape(c))).collect();
-    kf.set_value(group, "conditions", &raw);
+    kf.set_value(group, "conditions", &crate::settings::raw_list(&conditions));
     let toggle = |v: Option<bool>, on: &'static str, off: &'static str| v.map_or("", |b| if b { on } else { off });
     kf.set_string(group, "read", toggle(r.read, "read", "unread"));
     kf.set_string(group, "star", toggle(r.star, "star", "unstar"));
@@ -351,6 +359,11 @@ fn write_rule(kf: &glib::KeyFile, group: &str, r: &Rule) {
     };
     kf.set_string(group, "file", &file);
     kf.set_boolean(group, "stop", r.stop);
+    if r.scope.is_empty() {
+        let _ = kf.remove_key(group, "scope");
+    } else {
+        kf.set_value(group, "scope", &crate::settings::raw_list(&r.scope));
+    }
 }
 
 fn load_file() -> glib::KeyFile {
@@ -385,6 +398,28 @@ pub fn load(account: &str) -> Vec<Rule> {
         .collect();
     found.sort_by_key(|(n, _)| *n);
     found.into_iter().map(|(_, r)| r).collect()
+}
+
+/// Follows a folder renamed or moved from `old` to `new` in the
+/// account's rules: where they file and the folders they run on.
+pub fn folder_renamed(account: &str, old: &str, new: &str) -> Result<(), glib::Error> {
+    let mut rules = load(account);
+    let mut changed = false;
+    for r in rules.iter_mut() {
+        if let Some(Filing::Folder(f)) = &mut r.file
+            && let Some(p) = crate::renamed_path(f, old, new)
+        {
+            *f = p;
+            changed = true;
+        }
+        for f in r.scope.iter_mut() {
+            if let Some(p) = crate::renamed_path(f, old, new) {
+                *f = p;
+                changed = true;
+            }
+        }
+    }
+    if changed { save(account, &rules) } else { Ok(()) }
 }
 
 /// Replaces the account's rules.
@@ -506,11 +541,14 @@ mod tests {
             star: None,
             file: Some(Filing::Folder("Lists/Library".into())),
             stop: true,
+            scope: vec!["Lists".into(), "Odd; name".into()],
         };
         write_rule(&kf, "acct:0", &rule);
         let kf2 = glib::KeyFile::new();
         kf2.load_from_data(&kf.to_data(), glib::KeyFileFlags::NONE).unwrap();
         assert_eq!(read_rule(&kf2, "acct:0"), rule);
         assert_eq!(group_account("a:b:12"), Some(("a:b", 12)));
+        assert!(rule.runs_in("Odd; name") && !rule.runs_in("INBOX"));
+        assert!(Rule::default().runs_in("inbox"));
     }
 }

@@ -70,6 +70,19 @@
   </screenshots>
 
   <releases>
+    <release version="0.4.0" date="2026-11-22">
+      <description>
+        <p>Folders can be managed from Salutations.</p>
+        <ul>
+          <li>Create, rename, move, and delete folders from the folder list's menus, by dragging, or in Preferences</li>
+          <li>Deleting a folder moves its mail to Trash first</li>
+          <li>Each folder's settings in Preferences: name, offline use, notifications, and which special folder it is</li>
+          <li>New mail notifications for any folder, not just Inbox</li>
+          <li>Rules can run on any folders, not just Inbox</li>
+          <li>Rules that check headers wait and try again when a message could not be downloaded</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.2" date="2026-11-21">
       <description>
         <p>Mail that could not be sent is easier to deal with.</p>

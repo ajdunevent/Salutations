@@ -23,8 +23,8 @@ pub(crate) const DELETED: u32 = camel::MessageFlags::DELETED.bits();
 pub(crate) const JUNK: u32 = camel::MessageFlags::JUNK.bits();
 
 /// A message as the rules and notifications compare it: subject, date
-/// sent, and sender. Moves into INBOX made by Salutations register theirs,
-/// so they are not taken for new mail.
+/// sent, and sender. Moves into a watched folder made by Salutations
+/// register theirs, so they are not taken for new mail.
 pub(crate) type MessageKey = (String, i64, String);
 
 pub(crate) fn message_key(folder: &camel::Folder, uid: &str) -> Option<MessageKey> {
@@ -39,11 +39,14 @@ pub(crate) fn message_key(folder: &camel::Folder, uid: &str) -> Option<MessageKe
 /// Per account: what notifications and the outbox keep.
 #[derive(Default)]
 pub(crate) struct AccountExtra {
-    pub watched: Cell<bool>,
-    pub noted: RefCell<Vec<String>>,
-    pub combined: RefCell<Vec<String>>,
-    pub last_uid: Cell<Option<u64>>,
-    pub expected: RefCell<Vec<MessageKey>>,
+    /// Watched folders by full name.
+    pub watches: RefCell<std::collections::HashMap<String, Rc<crate::inbox::Watch>>>,
+    /// Folders being opened to be watched.
+    pub opening: RefCell<std::collections::HashSet<String>>,
+    /// The combined notification's messages: folder and UID.
+    pub combined: RefCell<Vec<(String, String)>>,
+    /// Messages Salutations is moving into a watched folder, by folder.
+    pub expected: RefCell<Vec<(String, MessageKey)>>,
     pub unread: Cell<Option<i64>>,
     pub sending: Cell<bool>,
     pub sending_uid: RefCell<Option<String>>,
@@ -80,7 +83,7 @@ pub struct Daemon {
     folders: RefCell<HashMap<(String, String), (camel::Folder, glib::SignalHandlerId)>>,
     hold: RefCell<Option<gio::ApplicationHoldGuard>>,
     /// The window writes the settings file; changes apply here too.
-    settings_monitor: RefCell<Option<gio::FileMonitor>>,
+    settings_monitor: RefCell<Vec<gio::FileMonitor>>,
     quitting: Cell<bool>,
 }
 
@@ -100,7 +103,7 @@ impl Daemon {
             pending: RefCell::new(Vec::new()),
             folders: RefCell::new(HashMap::new()),
             hold: RefCell::new(None),
-            settings_monitor: RefCell::new(None),
+            settings_monitor: RefCell::new(Vec::new()),
             quitting: Cell::new(false),
         });
         let weak = Rc::downgrade(&this);
@@ -120,20 +123,30 @@ impl Daemon {
         this
     }
 
+    /// Follows the settings and rules files, which the window writes: what
+    /// keeps the process running, and which folders are watched.
     fn watch_settings(self: &Rc<Self>) {
-        let file = gio::File::for_path(salutations_core::settings::path());
-        let Ok(monitor) = file.monitor_file(gio::FileMonitorFlags::NONE, None::<&gio::Cancellable>) else { return };
-        let weak = Rc::downgrade(self);
-        monitor.connect_changed(move |_, _, _, event| {
-            if !matches!(event, gio::FileMonitorEvent::ChangesDoneHint | gio::FileMonitorEvent::Created | gio::FileMonitorEvent::Deleted) {
-                return;
-            }
-            if let Some(this) = weak.upgrade() {
-                Settings::reload();
-                this.update_hold();
-            }
-        });
-        *self.settings_monitor.borrow_mut() = Some(monitor);
+        let mut monitors = Vec::new();
+        for (path, settings) in [(salutations_core::settings::path(), true), (salutations_core::rules::path(), false)] {
+            let file = gio::File::for_path(path);
+            let Ok(monitor) = file.monitor_file(gio::FileMonitorFlags::NONE, None::<&gio::Cancellable>) else { continue };
+            let weak = Rc::downgrade(self);
+            monitor.connect_changed(move |_, _, _, event| {
+                if !matches!(event, gio::FileMonitorEvent::ChangesDoneHint | gio::FileMonitorEvent::Created | gio::FileMonitorEvent::Deleted) {
+                    return;
+                }
+                let Some(this) = weak.upgrade() else { return };
+                if settings {
+                    Settings::reload();
+                    this.update_hold();
+                }
+                for a in this.engine.accounts() {
+                    this.update_watches(&a);
+                }
+            });
+            monitors.push(monitor);
+        }
+        *self.settings_monitor.borrow_mut() = monitors;
     }
 
     pub(crate) fn extra(&self, account: &str) -> Rc<AccountExtra> {
@@ -172,13 +185,14 @@ impl Daemon {
             }
             engine::Event::InboxReady(uid) => {
                 if let Some(a) = self.engine.account(uid) {
-                    self.watch_inbox(&a);
+                    self.update_watches(&a);
                     self.emit("account", self.account_info(&a).to_variant());
                 }
             }
             engine::Event::Synced(uid) => {
                 if let Some(a) = self.engine.account(uid) {
                     self.retry_waiting(&a);
+                    self.refresh_watched(&a);
                 }
                 self.update_badge();
                 self.emit("synced", uid.to_variant());
@@ -342,6 +356,86 @@ impl Daemon {
 
     /// The account's folder `name`, opened when needed and watched for the
     /// window.
+    /// Stops using `path` and its subfolders before they are renamed or
+    /// deleted: unwatched (forgotten when deleted) and dropped from the
+    /// folders kept open.
+    fn let_go(&self, acct: &AccountState, path: &str, forget: bool) {
+        let watched: Vec<String> = self.extra(acct.uid()).watches.borrow().keys().filter(|p| salutations_core::within(p, path)).cloned().collect();
+        for p in watched {
+            self.unwatch(acct, &p, forget);
+        }
+        let open: Vec<(String, String)> =
+            self.folders.borrow().keys().filter(|(a, f)| a == acct.uid() && salutations_core::within(f, path)).cloned().collect();
+        for key in open {
+            if let Some((f, h)) = self.folders.borrow_mut().remove(&key) {
+                f.disconnect(h);
+            }
+        }
+    }
+
+    /// Deletes `path` and its subfolders: first every message goes to
+    /// Trash, then the folders, deepest first. A folder in Trash, or on an
+    /// account without Trash, is deleted with its messages. Nothing is
+    /// deleted unless every move worked. The number of messages moved.
+    async fn delete_folder(self: &Rc<Self>, acct: &Rc<AccountState>, path: &str) -> Result<usize, glib::Error> {
+        let store = self.engine.store_for(acct)?;
+        let nodes = self.engine.session.folders_future(&store, false).await?;
+        let mut all = Vec::new();
+        fn walk(nodes: &[camel::FolderNode], out: &mut Vec<(String, bool)>) {
+            for n in nodes {
+                out.push((n.full_name.clone(), n.flags.contains(camel::FolderInfoFlags::NOSELECT)));
+                walk(&n.children, out);
+            }
+        }
+        walk(&nodes, &mut all);
+        let mut doomed: Vec<(String, bool)> = all.into_iter().filter(|(f, _)| salutations_core::within(f, path)).collect();
+        if doomed.is_empty() {
+            return Err(glib::Error::new(camel::StoreError::NoFolder, &format!("No folder {path}")));
+        }
+        let special = acct.special().unwrap_or_default();
+        if doomed.iter().any(|(f, _)| f.eq_ignore_ascii_case("INBOX") || special.role_of(f).is_some()) {
+            return Err(glib::Error::new(gio::IOErrorEnum::PermissionDenied, "Inbox and special folders can't be deleted"));
+        }
+        let trash = special.trash.clone().filter(|t| !salutations_core::within(path, t));
+        let mut moved = 0;
+        if let Some(trash) = trash {
+            let read = Settings::get().read_on_delete;
+            for (f, noselect) in &doomed {
+                if *noselect {
+                    continue;
+                }
+                let folder = self.folder(acct.uid(), f).await?;
+                folder.refresh_info_future(glib::ffi::G_PRIORITY_DEFAULT).await?;
+                let uids: Vec<String> =
+                    folder.uids().iter().map(|u| u.to_string()).filter(|u| folder.message_flags(u) & DELETED == 0).collect();
+                if uids.is_empty() {
+                    continue;
+                }
+                if read {
+                    crate::inbox::set_flags(&folder, &uids, SEEN, SEEN);
+                }
+                if !self.move_now(acct, &folder, &uids, &trash).await {
+                    return Err(glib::Error::new(gio::IOErrorEnum::Failed, &format!("Cannot move the messages in {f} to Trash")));
+                }
+                moved += uids.len();
+            }
+        }
+        self.let_go(acct, path, true);
+        doomed.sort_by_key(|(f, _)| std::cmp::Reverse(f.matches('/').count()));
+        for (f, _) in doomed {
+            let job = Handoff(store.clone());
+            let name = f.clone();
+            gio::spawn_blocking(move || {
+                let Handoff(s) = job;
+                s.delete_folder_sync(&name, None::<&gio::Cancellable>)
+            })
+            .await
+            .map_err(|_| glib::Error::new(gio::IOErrorEnum::Failed, "Cannot delete the folder"))??;
+            log(&format!("{}: deleted {f}", acct.uid()));
+        }
+        Ok(moved)
+    }
+
     pub(crate) async fn folder(self: &Rc<Self>, account: &str, name: &str) -> Result<camel::Folder, glib::Error> {
         let key = (account.to_string(), name.to_string());
         if let Some((f, _)) = self.folders.borrow().get(&key) {
@@ -553,10 +647,8 @@ impl Daemon {
                 let (uid, name, data, flags) = args!((String, String, glib::Variant, u32));
                 let f = self.folder(&uid, &name).await?;
                 let msg = parse_message(data.fixed_array::<u8>().map_err(|_| bad())?)?;
-                if name.eq_ignore_ascii_case("INBOX")
-                    && let Some(k) = key_of(&msg)
-                {
-                    self.extra(&uid).expected.borrow_mut().push(k);
+                if let Some(k) = key_of(&msg) {
+                    self.expect(&uid, &name, [k]);
                 }
                 let new = send::append(&f, &msg, flags).await?;
                 Ok(new.unwrap_or_default().to_variant())
@@ -565,10 +657,7 @@ impl Daemon {
                 let (uid, name, uids, dest_account, dest, delete) = args!((String, String, Vec<String>, String, String, bool));
                 let src = self.folder(&uid, &name).await?;
                 let to = self.folder(&dest_account, &dest).await?;
-                if dest.eq_ignore_ascii_case("INBOX") {
-                    let keys: Vec<MessageKey> = uids.iter().filter_map(|u| message_key(&src, u)).collect();
-                    self.extra(&dest_account).expected.borrow_mut().extend(keys);
-                }
+                self.expect(&dest_account, &dest, uids.iter().filter_map(|u| message_key(&src, u)));
                 let job = Handoff((src, to));
                 let new = gio::spawn_blocking(move || {
                     let Handoff((src, to)) = job;
@@ -592,6 +681,45 @@ impl Daemon {
                 .await
                 .map_err(|_| glib::Error::new(gio::IOErrorEnum::Failed, "Cannot create the folder"))??;
                 Ok(unit)
+            }
+            "rename_folder" => {
+                let (uid, old, new) = args!((String, String, String));
+                let a = self.account(&uid)?;
+                let store = self.engine.store_for(&a)?;
+                self.let_go(&a, &old, false);
+                // IMAPX's rename drops its own reference to the folder and
+                // then uses it, so one is held here until it is done.
+                let held = self.engine.session.folder_future(&store, &old).await?;
+                let job = Handoff((store, held));
+                let (o, n) = (old.clone(), new.clone());
+                let renamed = gio::spawn_blocking(move || {
+                    let Handoff((s, _held)) = job;
+                    s.rename_folder_sync(&o, &n, None::<&gio::Cancellable>)
+                })
+                .await
+                .map_err(|_| glib::Error::new(gio::IOErrorEnum::Failed, "Cannot rename the folder"))?;
+                if renamed.is_ok() {
+                    crate::inbox::rename_state(&uid, &old, &new);
+                    if let Some(mut special) = a.special() {
+                        let before = special.clone();
+                        special.renamed(&old, &new);
+                        if special != before {
+                            self.engine.set_special(&a, special);
+                        }
+                    }
+                }
+                self.engine.refresh_folders(&a).await;
+                self.update_watches(&a);
+                renamed?;
+                Ok(unit)
+            }
+            "delete_folder" => {
+                let (uid, path) = args!((String, String));
+                let a = self.account(&uid)?;
+                let moved = self.delete_folder(&a, &path).await;
+                self.engine.refresh_folders(&a).await;
+                self.update_watches(&a);
+                Ok((moved? as u32).to_variant())
             }
             "cached_header" => {
                 let (uid, name, u, header) = args!((String, String, String, String));

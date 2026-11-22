@@ -318,6 +318,13 @@ These shaped `salutations-core` and the app and apply to all later work.
   refreshes every folder on each check. An account whose source has no
   `CheckAll` key would pick that up, so Salutations writes false once per
   account.
+- IMAPX's `rename_folder_sync` takes the folder, drops its reference,
+  then sets the folder's new mailbox on it. When nothing else holds the
+  folder that is a freed object (seen as "camel_imapx_folder_set_mailbox:
+  assertion failed"), so the background process holds the folder for the
+  rename.
+- The folder tree's message totals are 0, not unknown, for folders never
+  opened in the session, so they are not shown as counts anywhere.
 - Camel has no public call to drop one cached body. `offline::prune()`
   deletes the file itself: an IMAPX folder's data cache sits next to its
   state file, each body at `cur/<hash>/<safe uid>` with hash bits 5 to 10

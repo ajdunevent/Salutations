@@ -19,6 +19,8 @@ const MAIL_APP: &str = "default-mail-app";
 const COMPOSE: &str = "compose:";
 /// Followed by the account UID.
 const SYNC: &str = "sync:";
+/// Followed by the account UID.
+const FOLDERS: &str = "folders:";
 
 /// How an account checks and downloads, besides what its EDS source keeps.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -215,6 +217,9 @@ pub struct Settings {
     pub compose: std::collections::BTreeMap<String, ComposePrefs>,
     /// Per account UID.
     pub sync: std::collections::BTreeMap<String, SyncPrefs>,
+    /// Per account, the folders new mail is notified for; absent means
+    /// INBOX only.
+    pub notify_folders: std::collections::BTreeMap<String, Vec<String>>,
     pub import_keys: ImportKeys,
     pub keyserver: String,
 }
@@ -251,6 +256,7 @@ impl Default for Settings {
             threaded: true,
             compose: Default::default(),
             sync: Default::default(),
+            notify_folders: Default::default(),
             import_keys: ImportKeys::Prompt,
             keyserver: DEFAULT_KEYSERVER.to_string(),
         }
@@ -349,6 +355,12 @@ impl Settings {
             s.sync.insert(uid.to_string(), prefs);
         }
         for group in kf.groups().iter() {
+            let Some(uid) = group.strip_prefix(FOLDERS).filter(|u| !u.is_empty()) else { continue };
+            if let Ok(list) = kf.string_list(group, "notify") {
+                s.notify_folders.insert(uid.to_string(), list.iter().map(|f| f.to_string()).collect());
+            }
+        }
+        for group in kf.groups().iter() {
             let Some(uid) = group.strip_prefix(COMPOSE).filter(|u| !u.is_empty()) else { continue };
             let d = ComposePrefs::default();
             let prefs = ComposePrefs {
@@ -443,6 +455,9 @@ impl Settings {
             kf.set_boolean(&group, "never-download", p.never_download);
             kf.set_boolean(&group, "pause-power-save", p.pause_power_save);
         }
+        for (uid, list) in &self.notify_folders {
+            kf.set_value(&format!("{FOLDERS}{uid}"), "notify", &raw_list(list));
+        }
         kf.set_string(CRYPTO, "import-keys", self.import_keys.key());
         kf.set_string(CRYPTO, "keyserver", &self.keyserver);
         let p = path();
@@ -452,6 +467,29 @@ impl Settings {
         kf.save_to_file(&p)?;
         *CURRENT.lock().unwrap() = Some(self.clone());
         Ok(())
+    }
+
+    /// The folders whose new mail is notified, INBOX unless set.
+    pub fn notify_folders_for(&self, account_uid: &str) -> Vec<String> {
+        self.notify_folders.get(account_uid).cloned().unwrap_or_else(|| vec!["INBOX".to_string()])
+    }
+
+    /// Follows a folder renamed or moved from `old` to `new`.
+    pub fn folder_renamed(&mut self, account_uid: &str, old: &str, new: &str) {
+        if let Some(list) = self.notify_folders.get_mut(account_uid) {
+            for f in list.iter_mut() {
+                if let Some(p) = crate::renamed_path(f, old, new) {
+                    *f = p;
+                }
+            }
+        }
+    }
+
+    /// Forgets a deleted folder and its subfolders.
+    pub fn folder_deleted(&mut self, account_uid: &str, path: &str) {
+        if let Some(list) = self.notify_folders.get_mut(account_uid) {
+            list.retain(|f| !crate::within(f, path));
+        }
     }
 
     pub fn sync_for(&self, account_uid: &str) -> SyncPrefs {
@@ -468,6 +506,15 @@ impl Settings {
         self.remote_senders.contains(&email)
             || from.domain().is_some_and(|d| self.remote_domains.contains(&d))
     }
+}
+
+/// A GKeyFile list, written raw: glib's bindings have no
+/// set_string_list, and set_string would escape the separators.
+pub(crate) fn raw_list(items: &[String]) -> String {
+    items
+        .iter()
+        .map(|i| format!("{};", i.replace('\\', "\\\\").replace(';', "\\;").replace('\t', "\\t").replace('\n', "\\n")))
+        .collect()
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@ mod contact_menu;
 mod debug;
 mod default_app;
 mod folder_object;
+mod folder_prefs;
 mod fit_stack;
 mod folder_pane;
 mod inline_image;

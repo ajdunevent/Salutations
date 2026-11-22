@@ -85,3 +85,19 @@ pub fn forget(ids: &[u64]) {
         }
     });
 }
+
+/// Follows a folder renamed or moved from `old` to `new`.
+pub fn folder_renamed(account: &str, old: &str, new: &str) {
+    with(|entries| {
+        let mut changed = false;
+        for e in entries.iter_mut().filter(|e| e.account == account) {
+            if let Some(p) = crate::renamed_path(&e.folder, old, new) {
+                e.folder = p;
+                changed = true;
+            }
+        }
+        if changed {
+            save(entries);
+        }
+    });
+}

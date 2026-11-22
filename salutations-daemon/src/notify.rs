@@ -25,24 +25,27 @@ const PATH: &str = "/org/freedesktop/Notifications";
 /// What a notification stands for.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Subject {
-    Message { account: String, uid: String },
+    Message { account: String, folder: String, uid: String },
     Combined { account: String },
 }
 
 /// What the user did with a notification.
 #[derive(Debug, Clone)]
 pub enum Action {
-    Open { account: String, uid: String },
-    Delete { account: String, uid: String },
-    Junk { account: String, uid: String },
-    Reply { account: String, uid: String },
-    OpenInbox { account: String },
+    Open { account: String, folder: String, uid: String },
+    Delete { account: String, folder: String, uid: String },
+    Junk { account: String, folder: String, uid: String },
+    Reply { account: String, folder: String, uid: String },
+    /// The combined notification: the folder its messages are in.
+    OpenNew { account: String },
 }
 
 pub struct MessageNote<'a> {
     pub account: &'a str,
-    /// The account's name when there is more than one account.
-    pub account_name: Option<String>,
+    pub folder: &'a str,
+    /// In place of the sender, who then leads the body: the folder outside
+    /// INBOX, the account's name with more than one account, or both.
+    pub title: Option<String>,
     pub uid: &'a str,
     pub sender: &'a str,
     /// The address book's name for the sender, for the icon's initials.
@@ -169,11 +172,17 @@ impl Notifier {
         let subject = self.ids.borrow().iter().find(|(_, v)| **v == id).map(|(k, _)| k.clone());
         let Some(subject) = subject else { return };
         let action = match (&subject, key) {
-            (Subject::Message { account, uid }, "default") => Action::Open { account: account.clone(), uid: uid.clone() },
-            (Subject::Message { account, uid }, "delete") => Action::Delete { account: account.clone(), uid: uid.clone() },
-            (Subject::Message { account, uid }, "junk") => Action::Junk { account: account.clone(), uid: uid.clone() },
-            (Subject::Message { account, uid }, "reply") => Action::Reply { account: account.clone(), uid: uid.clone() },
-            (Subject::Combined { account }, "default" | "open-inbox") => Action::OpenInbox { account: account.clone() },
+            (Subject::Message { account, folder, uid }, k) => {
+                let (account, folder, uid) = (account.clone(), folder.clone(), uid.clone());
+                match k {
+                    "default" => Action::Open { account, folder, uid },
+                    "delete" => Action::Delete { account, folder, uid },
+                    "junk" => Action::Junk { account, folder, uid },
+                    "reply" => Action::Reply { account, folder, uid },
+                    _ => return,
+                }
+            }
+            (Subject::Combined { account }, "default" | "open") => Action::OpenNew { account: account.clone() },
             _ => return,
         };
         // Servers close a notification after one of its actions.
@@ -187,8 +196,8 @@ impl Notifier {
     pub fn message(&self, m: MessageNote) {
         let sender = if m.sender.is_empty() { "Unknown sender" } else { m.sender };
         let subject = if m.subject.is_empty() { "(No subject)" } else { m.subject };
-        let (title, first) = match &m.account_name {
-            Some(name) => (name.as_str(), format!("{sender}: {subject}")),
+        let (title, first) = match &m.title {
+            Some(title) => (title.as_str(), format!("{sender}: {subject}")),
             None => (sender, subject.to_string()),
         };
         let body = if m.preview.is_empty() {
@@ -200,13 +209,15 @@ impl Notifier {
         if m.junk {
             actions.push(("junk", "Junk"));
         }
-        let key = Subject::Message { account: m.account.into(), uid: m.uid.into() };
+        let key = Subject::Message { account: m.account.into(), folder: m.folder.into(), uid: m.uid.into() };
         let icon = avatar(m.contact_name.as_deref().unwrap_or(sender), m.photo.as_ref());
         self.send(key, title, &body, &actions, Some(icon), m.sound);
     }
 
     /// Replaces an existing combined notification in place.
-    pub fn combined(&self, account: &str, account_name: &str, count: usize, senders: &[String], sound: bool) {
+    /// `folder` names the folder the messages are in when they are all in
+    /// one folder other than INBOX; its button opens it, INBOX otherwise.
+    pub fn combined(&self, account: &str, account_name: &str, folder: Option<&str>, count: usize, senders: &[String], sound: bool) {
         let title = match count {
             1 => format!("1 new message in {account_name}"),
             n => format!("{n} new messages in {account_name}"),
@@ -223,7 +234,8 @@ impl Notifier {
             n => escape(&format!("{} and {} others", names[..2].join(", "), n - 2)),
         };
         let key = Subject::Combined { account: account.into() };
-        self.send(key, &title, &body, &[("default", "Open Inbox"), ("open-inbox", "Open Inbox")], None, sound);
+        let label = folder.map_or("Open Inbox".to_string(), |f| format!("Open {f}"));
+        self.send(key, &title, &body, &[("default", &label), ("open", &label)], None, sound);
     }
 
     fn send(&self, key: Subject, title: &str, body: &str, actions: &[(&str, &str)], image: Option<glib::Variant>, sound: bool) {
