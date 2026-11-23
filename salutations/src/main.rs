@@ -20,6 +20,7 @@ mod preferences;
 mod people;
 mod pull_refresh;
 mod remote;
+mod rich_editor;
 mod recipients;
 mod row_holder;
 mod rule_editor;

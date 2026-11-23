@@ -713,6 +713,11 @@ fn save_compose(uid: &str, f: impl FnOnce(&mut salutations_core::ComposePrefs)) 
     }
 }
 
+const FORMATS: [salutations_core::compose::Format; 3] = {
+    use salutations_core::compose::Format;
+    [Format::Rich, Format::Markdown, Format::Plain]
+};
+
 /// Default format, From aliases, and the signature.
 fn sending_groups(account: &Account) -> Vec<adw::PreferencesGroup> {
     use salutations_core::compose::{self, Format};
@@ -722,14 +727,14 @@ fn sending_groups(account: &Account) -> Vec<adw::PreferencesGroup> {
     let sending = adw::PreferencesGroup::builder().title("Sending").build();
     let format = adw::ComboRow::builder()
         .title("Default format")
-        .model(&gtk::StringList::new(&["Markdown", "Plain text"]))
-        .selected(if prefs.format == Format::Plain { 1 } else { 0 })
+        .model(&gtk::StringList::new(&FORMATS.map(Format::label)))
+        .selected(FORMATS.iter().position(|f| *f == prefs.format).unwrap_or(1) as u32)
         .build();
     sending.add(&format);
     {
         let uid = uid.clone();
         format.connect_selected_notify(move |row| {
-            let f = if row.selected() == 1 { Format::Plain } else { Format::Markdown };
+            let f = FORMATS.get(row.selected() as usize).copied().unwrap_or_default();
             save_compose(&uid, |p| p.format = f);
         });
     }
@@ -746,7 +751,9 @@ fn sending_groups(account: &Account) -> Vec<adw::PreferencesGroup> {
             for r in rows.borrow_mut().drain(..) {
                 aliases.remove(&r);
             }
-            aliases.remove(&add);
+            if add.parent().is_some() {
+                aliases.remove(&add);
+            }
             let list = account.aliases();
             for (i, a) in list.iter().enumerate() {
                 let row = adw::ActionRow::builder().title(glib::markup_escape_text(&compose::format_address(a))).build();
@@ -799,6 +806,8 @@ fn sending_groups(account: &Account) -> Vec<adw::PreferencesGroup> {
         });
     }
 
+    const PLAIN_NOTE: &str = "For Markdown and plain text messages";
+    const RICH_NOTE: &str = "For rich text messages. If it is left blank, the plain text signature is used.";
     let signature = adw::PreferencesGroup::builder().title("Signature").build();
     let buffer = gtk::TextBuffer::new(None);
     buffer.set_text(&prefs.signature);
@@ -809,11 +818,10 @@ fn sending_groups(account: &Account) -> Vec<adw::PreferencesGroup> {
         .bottom_margin(10)
         .left_margin(12)
         .right_margin(12)
-        .height_request(96)
+        .height_request(120)
         .accepts_tab(false)
-        .css_classes(["card", "signature-text"])
+        .css_classes(["signature-text"])
         .build();
-    signature.add(&text);
     {
         let uid = uid.clone();
         let pending: Rc<RefCell<Option<glib::SourceId>>> = Rc::default();
@@ -830,6 +838,69 @@ fn sending_groups(account: &Account) -> Vec<adw::PreferencesGroup> {
             }));
         });
     }
+    let editor = crate::rich_editor::RichEditor::new();
+    editor.web.set_vexpand(false);
+    editor.web.set_size_request(-1, 120);
+    editor.set_html(&prefs.signature_html);
+    let bar = crate::rich_editor::FormatBar::new(&editor);
+    bar.widget.set_margin_start(6);
+    bar.widget.set_margin_top(6);
+    bar.widget.set_margin_bottom(6);
+    let rich_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    rich_box.append(&bar.widget);
+    rich_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    rich_box.append(&editor.web);
+    let stack = gtk::Stack::builder().vhomogeneous(false).build();
+    stack.add_named(&text, Some("plain"));
+    stack.add_named(&rich_box, Some("rich"));
+    let kinds = adw::ToggleGroup::builder().hexpand(true).homogeneous(true).build();
+    kinds.add(adw::Toggle::builder().name("plain").label("Plain text").build());
+    kinds.add(adw::Toggle::builder().name("rich").label("Rich text").build());
+    kinds.set_margin_start(6);
+    kinds.set_margin_end(6);
+    kinds.set_margin_top(6);
+    kinds.set_margin_bottom(6);
+    let card = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    card.add_css_class("card");
+    card.set_overflow(gtk::Overflow::Hidden);
+    card.append(&kinds);
+    card.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    card.append(&stack);
+    signature.add(&card);
+    {
+        let (stack, group) = (stack.clone(), signature.clone());
+        let show = move |name: &str| {
+            stack.set_visible_child_name(name);
+            group.set_description(Some(if name == "rich" { RICH_NOTE } else { PLAIN_NOTE }));
+        };
+        let start = if prefs.format == Format::Rich { "rich" } else { "plain" };
+        kinds.set_active_name(Some(start));
+        show(start);
+        kinds.connect_active_name_notify(move |k| show(k.active_name().as_deref().unwrap_or("plain")));
+    }
+    {
+        let uid = uid.clone();
+        let pending: Rc<RefCell<Option<glib::SourceId>>> = Rc::default();
+        let weak = Rc::downgrade(&editor);
+        editor.connect_changed(move || {
+            if let Some(id) = pending.borrow_mut().take() {
+                id.remove();
+            }
+            let (uid, weak, p) = (uid.clone(), weak.clone(), pending.clone());
+            *pending.borrow_mut() = Some(glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+                p.borrow_mut().take();
+                let Some(e) = weak.upgrade() else { return };
+                let html = e.html();
+                // An editor emptied by hand keeps a line break.
+                let html = if compose::html_to_text(&html).trim().is_empty() && !html.contains("<img") { String::new() } else { html };
+                save_compose(&uid, |p| p.signature_html = html);
+            }));
+        });
+    }
+    // The card's handler keeps the editor for as long as the card lives.
+    card.connect_destroy(move |_| {
+        let _ = &editor;
+    });
     let options = adw::PreferencesGroup::new();
     let include = adw::SwitchRow::builder()
         .title("Include signature by default")

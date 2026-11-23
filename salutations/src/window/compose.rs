@@ -79,6 +79,23 @@ use crate::message_list::FORWARDED;
 
 impl Window {
     pub(super) fn connect_composer(self: &Rc<Self>) {
+        // A phone: the small layout, with the composer's buttons narrowed.
+        let tiny = adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 400sp").expect("condition"));
+        tiny.add_setter(&self.outer, "collapsed", Some(&true.to_value()));
+        tiny.add_setter(&self.inner, "collapsed", Some(&true.to_value()));
+        let weak = Rc::downgrade(self);
+        tiny.connect_apply(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.composer.set_narrow(true);
+            }
+        });
+        let weak = Rc::downgrade(self);
+        tiny.connect_unapply(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.composer.set_narrow(false);
+            }
+        });
+        self.window.add_breakpoint(tiny);
         let weak = Rc::downgrade(self);
         self.composer.connect_send(move || {
             if let Some(this) = weak.upgrade() {
@@ -267,6 +284,7 @@ impl Window {
             froms,
             &account.account.uid,
             &prefs.signature,
+            &prefs.signature_html,
             add_signature && prefs.include_signature,
             prefs.signature_above,
             &account.account.display_name(),
@@ -355,6 +373,7 @@ impl Window {
         self.composer.switch_account(
             &new.account.display_name(),
             &prefs.signature,
+            &prefs.signature_html,
             prefs.signature_above,
             CryptoSetup {
                 available: prefs.signing_key.is_some(),

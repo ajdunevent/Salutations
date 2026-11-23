@@ -3,8 +3,9 @@
 //!
 //! Plain text is sent as `format=flowed` (RFC 3676). Markdown is sent as
 //! `multipart/alternative`: its source as the flowed plain-text part and the
-//! rendered HTML as the second part. Images in the text go beside the
-//! alternative in a `multipart/related`, shown through `cid:`.
+//! rendered HTML as the second part. Rich text is sent the same way, with
+//! the editor's HTML and a plain-text version of it. Images in the text go
+//! beside the alternative in a `multipart/related`, shown through `cid:`.
 
 use std::sync::LazyLock;
 
@@ -26,6 +27,7 @@ pub enum Format {
     #[default]
     Markdown,
     Plain,
+    Rich,
 }
 
 impl Format {
@@ -33,6 +35,7 @@ impl Format {
         match self {
             Format::Markdown => "markdown",
             Format::Plain => "plain",
+            Format::Rich => "rich",
         }
     }
 
@@ -40,6 +43,7 @@ impl Format {
         match self {
             Format::Markdown => "Markdown",
             Format::Plain => "Plain text",
+            Format::Rich => "Rich text",
         }
     }
 
@@ -47,6 +51,7 @@ impl Format {
         match key.trim() {
             "markdown" => Some(Format::Markdown),
             "plain" => Some(Format::Plain),
+            "rich" => Some(Format::Rich),
             _ => None,
         }
     }
@@ -158,8 +163,11 @@ pub struct Outgoing {
     pub cc: String,
     pub bcc: String,
     pub subject: String,
+    /// The text; for rich text, the plain-text version of `html`.
     pub body: String,
     pub format: Format,
+    /// Rich text only: the editor's HTML, the content of the body element.
+    pub html: Option<String>,
     /// Without angle brackets; kept across draft saves so the draft and the
     /// sent message are the same message.
     pub message_id: String,
@@ -361,9 +369,15 @@ impl Outgoing {
             return text_part(&flowed(&self.body), "text/plain; charset=utf-8; format=flowed");
         }
         let used = self.used_inline();
-        let text = if draft { self.body.clone() } else { plain_images(&self.body, &used) };
+        let (text, html) = match (self.format, &self.html) {
+            (Format::Rich, Some(inner)) => (self.body.clone(), html_document(inner)),
+            _ => {
+                let text = if draft { self.body.clone() } else { plain_images(&self.body, &used) };
+                (text, markdown_html_with(&self.body, &used))
+            }
+        };
         let plain = text_part(&flowed(&text), "text/plain; charset=utf-8; format=flowed");
-        let html = text_part(&markdown_html_with(&self.body, &used), "text/html; charset=utf-8");
+        let html = text_part(&html, "text/html; charset=utf-8");
         let alt = Multipart::new();
         alt.set_mime_type("multipart/alternative");
         alt.set_boundary(None);
@@ -389,12 +403,16 @@ impl Outgoing {
 
     /// The inline images the text still shows, each once, in text order.
     fn used_inline(&self) -> Vec<Inline> {
+        let cids = match (self.format, &self.html) {
+            (Format::Rich, Some(html)) => html_cids(html),
+            _ => image_tokens(&self.body).into_iter().map(|t| t.cid).collect(),
+        };
         let mut used: Vec<Inline> = Vec::new();
-        for t in image_tokens(&self.body) {
-            if used.iter().any(|u| u.cid == t.cid) {
+        for cid in cids {
+            if used.iter().any(|u| u.cid == cid) {
                 continue;
             }
-            if let Some(i) = self.inline.iter().find(|i| i.cid == t.cid) {
+            if let Some(i) = self.inline.iter().find(|i| i.cid == cid) {
                 used.push(i.clone());
             }
         }
@@ -658,6 +676,81 @@ fn img_tag(cid: &str, size: Size, alt: &str) -> String {
     }
 }
 
+// Rich text
+
+/// The Content-IDs that `src="cid:…"` attributes in `html` name, in order.
+pub fn html_cids(html: &str) -> Vec<String> {
+    static SRC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bsrc\s*=\s*["']cid:([^"'\s>]+)["']"#).expect("valid regex"));
+    SRC.captures_iter(html).map(|c| c[1].to_string()).collect()
+}
+
+/// A rich message's HTML document around the editor's content.
+pub fn html_document(inner: &str) -> String {
+    format!(
+        "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><style>\
+         blockquote{{margin:0 0 0 .8ex;border-left:2px solid #ccc;padding-left:1ex}}\
+         img{{max-width:100%;height:auto}}</style></head><body>\n{inner}\n</body></html>\n"
+    )
+}
+
+/// The content of an HTML document's body element; the whole text when it
+/// has none.
+pub fn body_inner(html: &str) -> String {
+    static BODY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)<body\b[^>]*>(.*)</body\s*>").expect("valid regex"));
+    BODY.captures(html).map_or_else(|| html.to_string(), |c| c[1].trim().to_string())
+}
+
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// Plain text as editable HTML: a block per line, and "> " quotes as
+/// nested blockquotes.
+pub fn text_to_html(text: &str) -> String {
+    let mut out = String::new();
+    let mut depth = 0;
+    for line in text.replace("\r\n", "\n").split('\n') {
+        let (d, rest) = split_quote(line);
+        while depth < d {
+            out.push_str("<blockquote type=\"cite\">");
+            depth += 1;
+        }
+        while depth > d {
+            out.push_str("</blockquote>");
+            depth -= 1;
+        }
+        if rest.is_empty() {
+            out.push_str("<div><br></div>");
+        } else {
+            out.push_str(&format!("<div>{}</div>", escape_html(rest)));
+        }
+    }
+    out.push_str(&"</blockquote>".repeat(depth));
+    out
+}
+
+/// The HTML of a signature written as plain text, marked so the composer
+/// can find it again.
+pub fn signature_html(text: &str) -> String {
+    format!("<div class=\"salutations-signature\">{}</div>", text_to_html(text.trim_end()))
+}
+
+/// Inserts `signature` (HTML, already marked) into the HTML of a body
+/// that may end with a quoted block, as [`with_signature`] does for text.
+pub fn with_signature_html(body: &str, signature: &str, above_quote: bool) -> String {
+    let marker = ["<div>--- Previous Message ---", "<div>--- Forwarded Message ---"]
+        .iter()
+        .filter_map(|m| body.find(m))
+        .min();
+    match marker {
+        Some(at) if above_quote => {
+            let (top, rest) = body.split_at(at);
+            format!("{top}{signature}<div><br></div>{rest}")
+        }
+        _ => format!("{body}<div><br></div>{signature}"),
+    }
+}
+
 // Replies and forwards
 
 /// What a reply or forward needs from the original message.
@@ -890,6 +983,13 @@ pub fn html_to_text(html: &str) -> String {
         match (name.as_str(), closing) {
             ("head" | "style" | "script" | "title", false) if m[3].is_empty() => skip = Some(name),
             ("br", _) => newline(&mut out, depth),
+            ("img", false) => {
+                static ALT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\balt\s*=\s*"([^"]*)""#).expect("valid regex"));
+                // Images without alt text are often tracking pixels.
+                if let Some(alt) = ALT.captures(whole.as_str()).map(|c| unescape(c[1].trim())).filter(|a| !a.is_empty()) {
+                    out.push_str(&format!("[image: {alt}]"));
+                }
+            }
             ("blockquote", false) => {
                 depth += 1;
                 newline(&mut out, depth);
@@ -910,7 +1010,15 @@ pub fn html_to_text(html: &str) -> String {
                 newline(&mut out, depth);
                 out.push_str("- ");
             }
-            ("p" | "div" | "tr" | "table" | "ul" | "ol" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "hr" | "section"
+            // A div is one line, as editors write them: <div><br></div>
+            // is the blank one.
+            ("div", _) => {
+                let line_start = out.trim_end_matches(['>', ' ']).ends_with('\n') || out.trim_end_matches(['>', ' ']).is_empty();
+                if !line_start {
+                    newline(&mut out, depth);
+                }
+            }
+            ("p" | "tr" | "table" | "ul" | "ol" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "hr" | "section"
             | "article" | "header" | "footer", _) => newline(&mut out, depth),
             ("td" | "th", true) => out.push(' '),
             _ => {}
@@ -1023,7 +1131,7 @@ pub fn from_draft_with(msg: &MimeMessage, content: Option<&MimePart>) -> Outgoin
             format_addresses(&parsed)
         }
     };
-    let format = msg.header(FORMAT_HEADER).and_then(|f| Format::from_key(&f)).unwrap_or(Format::Plain);
+    let mut format = msg.header(FORMAT_HEADER).and_then(|f| Format::from_key(&f)).unwrap_or(Format::Plain);
     let (body, _) = match content {
         Some(c) => render::reply_text_in(c),
         None => render::reply_text(msg),
@@ -1031,6 +1139,20 @@ pub fn from_draft_with(msg: &MimeMessage, content: Option<&MimePart>) -> Outgoin
     let crypto = msg.header(CRYPTO_HEADER).map(|h| h.to_string()).unwrap_or_default();
     let root: &MimePart = content.unwrap_or(msg.upcast_ref());
     let mut inline: Vec<Inline> = Vec::new();
+    let html = (format == Format::Rich).then(|| render::html_text_in(root).map(|h| body_inner(&h))).flatten();
+    if format == Format::Rich && html.is_none() {
+        format = Format::Plain;
+    }
+    if let Some(h) = &html {
+        for cid in html_cids(h) {
+            if inline.iter().any(|i| i.cid == cid) {
+                continue;
+            }
+            if let Some((data, mime_type)) = render::inline_part_in(root, &cid) {
+                inline.push(Inline { name: inline_name(root, &cid).unwrap_or_else(|| "image".into()), cid, mime_type, data: glib::Bytes::from_owned(data) });
+            }
+        }
+    }
     if format == Format::Markdown {
         for t in image_tokens(&body) {
             if inline.iter().any(|i| i.cid == t.cid) {
@@ -1050,6 +1172,7 @@ pub fn from_draft_with(msg: &MimeMessage, content: Option<&MimePart>) -> Outgoin
         subject: msg.subject().map(|s| s.to_string()).unwrap_or_default(),
         body,
         format,
+        html,
         message_id: msg
             .message_id()
             .map(|m| m.trim_matches(['<', '>', ' ']).to_string())
@@ -1066,6 +1189,16 @@ pub fn from_draft_with(msg: &MimeMessage, content: Option<&MimePart>) -> Outgoin
         important: is_important(msg.header("Importance").as_deref(), msg.header("X-Priority").as_deref()),
         forwarded_id: msg.header(FORWARDED_HEADER).and_then(|h| message_ids(&h).into_iter().next()),
     }
+}
+
+/// The file name of the part with Content-ID `cid`.
+fn inline_name(part: &MimePart, cid: &str) -> Option<String> {
+    if part.content_id().is_some_and(|id| id.trim_matches(['<', '>', ' ']) == cid) {
+        return part.filename().map(|f| f.to_string());
+    }
+    let content = part.content()?;
+    let mp = content.downcast_ref::<Multipart>()?;
+    (0..mp.number()).filter_map(|i| mp.part(i)).find_map(|p| inline_name(&p, cid))
 }
 
 #[cfg(test)]
@@ -1136,6 +1269,24 @@ mod tests {
     fn html_text() {
         let t = html_to_text("<html><head><style>p{}</style></head><body><p>Hi&nbsp;there</p><blockquote><p>old</p></blockquote><ul><li>a</li><li>b</li></ul></body></html>");
         assert_eq!(t, "Hi there\n> old\n- a\n- b");
+    }
+
+    #[test]
+    fn editor_divs_are_lines() {
+        let html = text_to_html("Thanks.\n\n--- Previous Message ---\nFrom: x\n\n> Hi.");
+        assert_eq!(html_to_text(&html), "Thanks.\n\n--- Previous Message ---\nFrom: x\n> Hi.");
+        assert_eq!(html_to_text(r#"<div>See <img src="cid:a" alt="cat.png"></div>"#), "See [image: cat.png]");
+    }
+
+    #[test]
+    fn rich_text_helpers() {
+        assert_eq!(text_to_html("a <b>\n\n> q\n> > qq\nend"), "<div>a &lt;b&gt;</div><div><br></div><blockquote type=\"cite\"><div>q</div><blockquote type=\"cite\"><div>qq</div></blockquote></blockquote><div>end</div>");
+        assert_eq!(html_cids(r#"<img src="cid:a@b" alt=""><IMG SRC='cid:c@d'>"#), ["a@b", "c@d"]);
+        assert_eq!(body_inner("<html><body class=x>\n<p>hi</p>\n</body></html>"), "<p>hi</p>");
+        let body = "<div>Hi</div><div>--- Previous Message ---</div><blockquote>q</blockquote>";
+        let sig = signature_html("Me");
+        assert!(with_signature_html(body, &sig, true).starts_with("<div>Hi</div><div class=\"salutations-signature\">"));
+        assert!(with_signature_html(body, &sig, false).ends_with(&sig));
     }
 
     #[test]

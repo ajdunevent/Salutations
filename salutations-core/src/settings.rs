@@ -84,6 +84,8 @@ fn download_from_key(k: &str) -> Option<Download> {
 pub struct ComposePrefs {
     pub format: crate::compose::Format,
     pub signature: String,
+    /// The signature for rich text, as HTML; empty uses `signature`.
+    pub signature_html: String,
     pub include_signature: bool,
     /// The signature goes above the quoted message instead of at the end.
     pub signature_above: bool,
@@ -105,6 +107,7 @@ impl Default for ComposePrefs {
         Self {
             format: crate::compose::Format::Markdown,
             signature: String::new(),
+            signature_html: String::new(),
             include_signature: true,
             signature_above: false,
             signing_key: None,
@@ -370,6 +373,7 @@ impl Settings {
                     .and_then(|f| crate::compose::Format::from_key(&f))
                     .unwrap_or(d.format),
                 signature: kf.string(group, "signature").map(|s| s.to_string()).unwrap_or_default(),
+                signature_html: kf.string(group, "signature-html").map(|s| s.to_string()).unwrap_or_default(),
                 include_signature: kf.boolean(group, "include-signature").unwrap_or(d.include_signature),
                 signature_above: kf.boolean(group, "signature-above").unwrap_or(d.signature_above),
                 signing_key: kf.string(group, "signing-key").ok().map(|s| s.to_string()).filter(|s| !s.is_empty()),
@@ -435,6 +439,7 @@ impl Settings {
             let group = format!("{COMPOSE}{uid}");
             kf.set_string(&group, "format", p.format.key());
             kf.set_string(&group, "signature", &p.signature);
+            kf.set_string(&group, "signature-html", &p.signature_html);
             kf.set_boolean(&group, "include-signature", p.include_signature);
             kf.set_boolean(&group, "signature-above", p.signature_above);
             kf.set_string(&group, "signing-key", p.signing_key.as_deref().unwrap_or(""));

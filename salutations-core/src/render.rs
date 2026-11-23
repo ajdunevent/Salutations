@@ -211,6 +211,11 @@ pub fn reply_text_in(part: &MimePart) -> (String, bool) {
     }
 }
 
+/// The text of the HTML part a reader would see, if there is one.
+pub fn html_text_in(part: &MimePart) -> Option<String> {
+    find_body(part).filter(|(_, html)| *html).map(|(p, _)| part_text(&p))
+}
+
 /// The first text/plain part that is not an attachment.
 fn find_plain(part: &MimePart) -> Option<MimePart> {
     let ct = part.content_type();

@@ -14,6 +14,7 @@ use sourceview5::prelude::*;
 
 use crate::inline_image::{self, SizedImage};
 use crate::recipients::RecipientField;
+use crate::rich_editor::{self, FormatBar, RichEditor};
 
 /// The placeholder GTK gives a child anchor in the buffer's text.
 const ANCHOR: char = '\u{FFFC}';
@@ -140,6 +141,18 @@ pub struct Composer {
     view: sourceview5::View,
     format: gio::SimpleAction,
     format_button: gtk::MenuButton,
+    /// The format the editor shows, which a change of format converts from.
+    format_shown: Cell<Format>,
+    /// The rich text editor, made the first time it is needed.
+    rich: RefCell<Option<Rc<RichEditor>>>,
+    rich_bar: gtk::Box,
+    rich_holder: gtk::Box,
+    scroller: gtk::ScrolledWindow,
+    tools_box: gtk::Box,
+    insert_button: gtk::MenuButton,
+    /// Images in rich text, ready to send.
+    rich_images: RefCell<Vec<Inline>>,
+    signature_html: RefCell<String>,
     signature: gtk::ToggleButton,
     important: gtk::ToggleButton,
     /// The attachment tiles, with Show All under them.
@@ -182,7 +195,6 @@ pub struct Composer {
     key: RefCell<Option<Attachment>>,
     /// The user removed the key's tile; it is not added again.
     key_removed: Cell<bool>,
-    image_button: gtk::Button,
     /// Images in the text, by Content-ID. They stay after their place is
     /// deleted; the message carries only those the text still shows.
     images: RefCell<Vec<Image>>,
@@ -332,21 +344,18 @@ impl Composer {
             &Format::Markdown.key().to_variant(),
         );
         let format_menu = gio::Menu::new();
-        for f in [Format::Markdown, Format::Plain] {
+        for f in [Format::Rich, Format::Markdown, Format::Plain] {
             let item = gio::MenuItem::new(Some(f.label()), None);
             item.set_action_and_target_value(Some("composer.format"), Some(&f.key().to_variant()));
             format_menu.append_item(&item);
         }
-        let (c, format_label) = content("format-text-rich-symbolic", "Format", true);
-        let format_button = gtk::MenuButton::builder().child(&c).menu_model(&format_menu).build();
-        let (c, signature_label) = content("salutations-signature-symbolic", "Signature", false);
+        let format_button = gtk::MenuButton::builder().icon_name(format_icon(Format::Markdown)).menu_model(&format_menu).build();
         let signature = gtk::ToggleButton::builder()
-            .child(&c)
+            .icon_name("salutations-signature-symbolic")
             .tooltip_text("Include the account's signature")
             .visible(false)
             .build();
-        let (c, important_label) = content("salutations-important-symbolic", "Important", false);
-        let important = gtk::ToggleButton::builder().child(&c).tooltip_text("Mark as high importance").build();
+        let important = gtk::ToggleButton::builder().icon_name("salutations-important-symbolic").tooltip_text("Mark as high importance").build();
         let protection = gio::SimpleAction::new_stateful(
             "protection",
             Some(glib::VariantTy::STRING),
@@ -371,26 +380,22 @@ impl Composer {
             .build();
         let (c, attach_label) = content("mail-attachment-symbolic", "Attach", false);
         let attach = gtk::Button::builder().child(&c).tooltip_text("Attach files").build();
-        let (c, image_label) = content("insert-image-symbolic", "Embed", false);
-        let image_button = gtk::Button::builder().child(&c).tooltip_text("Embed images in the text").build();
-        let tools = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        tools.add_css_class("toolbar");
-        tools.add_css_class("compose-tools");
-        tools.append(&format_button);
-        tools.append(&signature);
-        tools.append(&important);
+        let (c, insert_label) = content("salutations-insert-symbolic", "Insert", false);
+        let insert_button = gtk::MenuButton::builder().child(&c).tooltip_text("Insert a link, image, or table").build();
+        let rich_bar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        rich_bar.set_visible(false);
+        let tools_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        tools_box.add_css_class("toolbar");
+        tools_box.add_css_class("compose-tools");
+        format_button.add_css_class("raised");
+        tools_box.append(&format_button);
+        tools_box.append(&rich_bar);
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
-        tools.append(&spacer);
-        tools.append(&image_button);
-        tools.append(&attach);
-        let tools = crate::label_bar::LabelBar::new(
-            &tools,
-            [attach_label, image_label, format_label, important_label, signature_label]
-                .into_iter()
-                .map(|l| vec![l])
-                .collect(),
-        );
+        tools_box.append(&spacer);
+        tools_box.append(&insert_button);
+        tools_box.append(&attach);
+        let tools = crate::label_bar::LabelBar::new(&tools_box, vec![vec![attach_label], vec![insert_label]]);
 
         let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
         column.append(&from_row);
@@ -410,11 +415,19 @@ impl Composer {
             .child(&column)
             .build();
         let status = adw::Banner::new("");
+        // Rich text is edited in a web view, which scrolls itself, under
+        // the fields rather than inside their scroller.
+        let rich_holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        rich_holder.set_vexpand(true);
+        rich_holder.set_visible(false);
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
         content.append(&status);
         content.append(&scroller);
+        content.append(&rich_holder);
 
         let ends = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        ends.append(&signature);
+        ends.append(&important);
         ends.append(&protection_button);
         ends.append(&send_button);
         let ends = crate::label_bar::LabelBar::new(&ends, vec![vec![protection_label.clone()]]);
@@ -447,6 +460,15 @@ impl Composer {
             view,
             format,
             format_button,
+            format_shown: Cell::new(Format::Markdown),
+            rich: RefCell::new(None),
+            rich_bar,
+            rich_holder,
+            scroller,
+            tools_box,
+            insert_button,
+            rich_images: RefCell::new(Vec::new()),
+            signature_html: RefCell::new(String::new()),
             signature,
             important,
             attachments_box,
@@ -477,7 +499,6 @@ impl Composer {
             setup: Cell::new(None),
             key: RefCell::new(None),
             key_removed: Cell::new(false),
-            image_button,
             images: RefCell::new(Vec::new()),
             places: RefCell::new(Vec::new()),
             image_width: Cell::new(0),
@@ -487,6 +508,7 @@ impl Composer {
         });
         this.connect_crypto();
         this.connect(&discard, &attach);
+        this.connect_insert(&actions);
         for f in [this.to.clone(), this.cc.clone(), this.bcc.clone()] {
             this.complete(&f);
         }
@@ -511,12 +533,6 @@ impl Composer {
         attach.connect_clicked(move |b| {
             if let Some(this) = weak.upgrade() {
                 this.choose_files(b);
-            }
-        });
-        let weak = Rc::downgrade(self);
-        self.image_button.connect_clicked(move |b| {
-            if let Some(this) = weak.upgrade() {
-                this.choose_images(b);
             }
         });
         let weak = Rc::downgrade(self);
@@ -944,13 +960,230 @@ impl Composer {
     }
 
     fn update_format(self: &Rc<Self>) {
-        self.format_button.set_tooltip_text(Some(&format!("Format: {}", self.format().label())));
+        let format = self.format();
+        self.format_button.set_tooltip_text(Some(&format!("Format: {}", format.label())));
+        self.format_button.set_icon_name(format_icon(format));
         self.update_language();
-        let markdown = self.format() == Format::Markdown;
-        self.image_button.set_visible(markdown);
-        if !markdown && !self.loading.get() {
-            self.images_to_attachments();
+        let was = self.format_shown.replace(format);
+        if !self.loading.get() && was != format {
+            self.convert(was, format);
         }
+        let rich = format == Format::Rich;
+        if rich {
+            self.rich();
+        }
+        self.rich_bar.set_visible(rich);
+        self.rich_holder.set_visible(rich);
+        self.view.set_visible(!rich);
+        self.scroller.set_vexpand(!rich);
+        self.scroller.set_propagate_natural_height(rich);
+        self.insert_button.set_visible(format != Format::Plain);
+        let menu = gio::Menu::new();
+        menu.append(Some("_Link…"), Some("composer.insert-link"));
+        menu.append(Some("_Image…"), Some("composer.insert-image"));
+        if rich {
+            menu.append(Some("_Table…"), Some("composer.insert-table"));
+        }
+        self.insert_button.set_menu_model(Some(&menu));
+    }
+
+    /// The rich text editor, made and placed the first time.
+    fn rich(self: &Rc<Self>) -> Rc<RichEditor> {
+        if let Some(r) = self.rich.borrow().as_ref() {
+            return r.clone();
+        }
+        let editor = RichEditor::new();
+        self.rich_holder.append(&editor.web);
+        self.rich_bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        self.rich_bar.append(&FormatBar::new(&editor).widget);
+        self.set_narrow(self.tools_box.has_css_class("narrow"));
+        let weak = Rc::downgrade(self);
+        editor.connect_changed(move || {
+            if let Some(this) = weak.upgrade() {
+                this.edited();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        editor.connect_signature_edited(move || {
+            let Some(this) = weak.upgrade() else { return };
+            this.signature_internal.set(true);
+            this.signature.set_active(false);
+            this.signature_internal.set(false);
+        });
+        *self.rich.borrow_mut() = Some(editor.clone());
+        editor
+    }
+
+    /// Narrows the toolbar's buttons so all nine fit a 360 px phone.
+    pub fn set_narrow(&self, narrow: bool) {
+        if narrow {
+            self.tools_box.add_css_class("narrow");
+        } else {
+            self.tools_box.remove_css_class("narrow");
+        }
+        let spacing = if narrow { 2 } else { 4 };
+        self.tools_box.set_spacing(spacing);
+        self.rich_bar.set_spacing(spacing);
+        if let Some(bar) = self.rich_bar.last_child().and_downcast::<gtk::Box>() {
+            bar.set_spacing(spacing);
+        }
+    }
+
+    /// Each format's signature stands in for the other when that one is
+    /// empty.
+    fn set_signatures(&self, text: &str, html: &str) {
+        let html = html.trim();
+        let text = if text.trim().is_empty() && !html.is_empty() { compose::html_to_text(html) } else { text.trim_end().to_string() };
+        *self.signature_text.borrow_mut() = text.trim_end().to_string();
+        *self.signature_html.borrow_mut() = html.to_string();
+    }
+
+    /// The marked signature for rich text: the account's rich one, or its
+    /// plain one as HTML.
+    fn rich_signature(&self) -> String {
+        let html = self.signature_html.borrow();
+        if html.trim().is_empty() {
+            compose::signature_html(&self.signature_text.borrow())
+        } else {
+            format!("<div class=\"salutations-signature\">{html}</div>")
+        }
+    }
+
+    /// The text without the inserted signature `sig`, the last copy.
+    fn without_signature(text: &str, sig: &str) -> String {
+        let Some(at) = text.rfind(sig).filter(|_| !sig.is_empty()) else { return text.to_string() };
+        let before = text[..at].trim_end_matches('\n');
+        let after = text[at + sig.len()..].trim_start_matches('\n');
+        if after.is_empty() { format!("{before}\n") } else { format!("{before}\n\n{after}") }
+    }
+
+    /// Carries the message over from one format to another.
+    fn convert(self: &Rc<Self>, from: Format, to: Format) {
+        let sig_on = self.signature.is_visible() && self.signature.is_active();
+        let sig_text = self.signature_text.borrow().clone();
+        let above = self.signature_above.get();
+        match (from, to) {
+            (_, Format::Rich) => {
+                let text = self.text();
+                let text = if sig_on { Self::without_signature(&text, &sig_text) } else { text };
+                let used: Vec<Inline> = self
+                    .images
+                    .borrow()
+                    .iter()
+                    .map(|i| Inline { cid: i.cid.clone(), name: i.name.clone(), mime_type: i.mime_type.clone(), data: i.data.clone() })
+                    .collect();
+                let mut html = if from == Format::Markdown {
+                    compose::body_inner(&compose::markdown_html_with(&text, &used))
+                } else {
+                    compose::text_to_html(&text)
+                };
+                if sig_on {
+                    html = compose::with_signature_html(&html, &self.rich_signature(), above);
+                }
+                for i in &used {
+                    rich_editor::add_image(i.clone());
+                }
+                *self.rich_images.borrow_mut() = used;
+                self.signature_internal.set(true);
+                self.set_body("");
+                self.signature_internal.set(false);
+                self.mark_signature(false);
+                self.rich().set_html(&html);
+            }
+            (Format::Rich, _) => {
+                let html = self.rich().html();
+                let mut text = compose::html_to_text(&html);
+                if sig_on {
+                    let sig_plain = compose::html_to_text(&self.rich_signature());
+                    text = Self::without_signature(&text, sig_plain.trim());
+                    text = compose::with_signature(&text, &sig_text, above);
+                }
+                let formatted = ["<b", "<i", "<u", "<s", "<span", "<font", "<table", "<ul", "<ol", "<a ", "<img"]
+                    .iter()
+                    .any(|t| html.contains(t));
+                let images: Vec<Inline> = self.rich_images.take();
+                let cids = compose::html_cids(&html);
+                let mut moved = false;
+                for i in images.into_iter().filter(|i| cids.contains(&i.cid)) {
+                    self.attachments.borrow_mut().push(Attachment { name: i.name, mime_type: i.mime_type, data: i.data });
+                    moved = true;
+                }
+                if moved {
+                    self.refresh_attachments();
+                }
+                self.signature_internal.set(true);
+                self.set_body(&text);
+                self.signature_internal.set(false);
+                self.mark_signature(sig_on);
+                if formatted {
+                    self.set_status(Some(&format!(
+                        "Switching to {} removed the formatting{}",
+                        to.label(),
+                        if moved { " and attached the images" } else { "" }
+                    )));
+                }
+            }
+            (_, Format::Plain) => self.images_to_attachments(),
+            _ => {}
+        }
+    }
+
+    fn connect_insert(self: &Rc<Self>, actions: &gio::SimpleActionGroup) {
+        let weak = Rc::downgrade(self);
+        let link = gio::SimpleAction::new("insert-link", None);
+        link.connect_activate(move |_, _| {
+            let Some(this) = weak.upgrade() else { return };
+            glib::spawn_future_local(async move {
+                let Some((url, text)) = rich_editor::ask_link(&this.widget).await else { return };
+                if this.format() == Format::Rich {
+                    this.rich().link(&url, &text);
+                    this.rich().grab_focus();
+                    return;
+                }
+                let b = &this.buffer;
+                let shown = if text.is_empty() { url.clone() } else { text };
+                let markdown = format!("[{}]({url})", shown.replace(['[', ']'], ""));
+                match b.selection_bounds() {
+                    Some((mut start, mut end)) => {
+                        let selected = b.text(&start, &end, false).to_string();
+                        b.delete(&mut start, &mut end);
+                        b.insert(&mut start, &format!("[{}]({url})", selected.replace(['[', ']'], "")));
+                    }
+                    None => b.insert_at_cursor(&markdown),
+                }
+                this.view.grab_focus();
+            });
+        });
+        actions.add_action(&link);
+        let weak = Rc::downgrade(self);
+        let image = gio::SimpleAction::new("insert-image", None);
+        image.connect_activate(move |_, _| {
+            if let Some(this) = weak.upgrade() {
+                let button = this.insert_button.clone();
+                this.choose_images(&button);
+            }
+        });
+        actions.add_action(&image);
+        let weak = Rc::downgrade(self);
+        let table = gio::SimpleAction::new("insert-table", None);
+        table.connect_activate(move |_, _| {
+            let Some(this) = weak.upgrade() else { return };
+            let w = Rc::downgrade(&this);
+            let picker = rich_editor::table_picker(move |cols, rows, header| {
+                if let Some(this) = w.upgrade() {
+                    this.rich().table(cols, rows, header);
+                    this.rich().grab_focus();
+                }
+            });
+            picker.set_parent(&this.insert_button);
+            picker.connect_closed(|p| {
+                let p = p.clone();
+                glib::idle_add_local_once(move || p.unparent());
+            });
+            // After the menu that asked for it has closed.
+            glib::idle_add_local_once(move || picker.popup());
+        });
+        actions.add_action(&table);
     }
 
     fn update_language(&self) {
@@ -1037,6 +1270,7 @@ impl Composer {
         froms: Vec<FromChoice>,
         account: &str,
         signature: &str,
+        signature_html: &str,
         include_signature: bool,
         signature_above: bool,
         account_name: &str,
@@ -1077,11 +1311,12 @@ impl Composer {
         self.format.set_state(&out.format.key().to_variant());
         self.update_format();
         self.important.set_active(out.important);
-        *self.signature_text.borrow_mut() = signature.trim_end().to_string();
+        self.set_signatures(signature, signature_html);
         self.signature_above.set(signature_above);
-        self.signature.set_visible(!signature.trim().is_empty());
+        let signature = self.signature_text.borrow().clone();
+        self.signature.set_visible(!signature.is_empty());
         let body = if include_signature && !signature.trim().is_empty() {
-            compose::with_signature(&out.body, signature, signature_above)
+            compose::with_signature(&out.body, &signature, signature_above)
         } else {
             out.body.clone()
         };
@@ -1107,9 +1342,23 @@ impl Composer {
             })
             .collect();
         self.signature_internal.set(true);
-        self.set_body(&body);
+        if out.format == Format::Rich {
+            self.set_body("");
+            let mut html = out.html.clone().unwrap_or_else(|| compose::text_to_html(&out.body));
+            if include_signature && !signature.trim().is_empty() {
+                html = compose::with_signature_html(&html, &self.rich_signature(), signature_above);
+            }
+            for i in &out.inline {
+                rich_editor::add_image(i.clone());
+            }
+            *self.rich_images.borrow_mut() = out.inline.clone();
+            self.images.borrow_mut().clear();
+            self.rich().set_html(&html);
+        } else {
+            self.set_body(&body);
+        }
         self.signature_internal.set(false);
-        self.mark_signature(self.signature.is_active());
+        self.mark_signature(self.signature.is_active() && out.format != Format::Rich);
         self.buffer.place_cursor(&self.buffer.start_iter());
         *self.attachments.borrow_mut() = out.attachments.clone();
         *self.forwarded.borrow_mut() = out.forwarded.clone();
@@ -1128,6 +1377,9 @@ impl Composer {
     pub fn focus(&self) {
         if self.to.text().is_empty() {
             self.to.grab_focus();
+        } else if let Some(rich) = self.rich.borrow().as_ref().filter(|_| self.format() == Format::Rich) {
+            rich.web.grab_focus();
+            rich.caret_to_start();
         } else {
             self.view.grab_focus();
         }
@@ -1136,25 +1388,33 @@ impl Composer {
     pub fn outgoing(&self) -> Outgoing {
         let froms = self.froms.borrow();
         let from = froms.get(self.from.selected() as usize).map(|c| c.address.clone()).unwrap_or_default();
+        let rich = (self.format() == Format::Rich).then(|| self.rich.borrow().as_ref().map(|r| r.html())).flatten();
+        let (body, inline) = match &rich {
+            Some(html) => (compose::html_to_text(html), self.rich_images.borrow().clone()),
+            None => (
+                self.text(),
+                self.images
+                    .borrow()
+                    .iter()
+                    .map(|i| Inline { cid: i.cid.clone(), name: i.name.clone(), mime_type: i.mime_type.clone(), data: i.data.clone() })
+                    .collect(),
+            ),
+        };
         Outgoing {
             from,
             to: self.to.text(),
             cc: self.cc.text(),
             bcc: self.bcc.text(),
             subject: self.subject.text().to_string(),
-            body: self.text(),
+            body,
             format: self.format(),
+            html: rich,
             message_id: self.message_id.borrow().clone(),
             in_reply_to: self.in_reply_to.borrow().clone(),
             forwarded_id: self.forwarded_id.borrow().clone(),
             references: self.references.borrow().clone(),
             attachments: self.attachments.borrow().clone(),
-            inline: self
-                .images
-                .borrow()
-                .iter()
-                .map(|i| Inline { cid: i.cid.clone(), name: i.name.clone(), mime_type: i.mime_type.clone(), data: i.data.clone() })
-                .collect(),
+            inline,
             forwarded: self.forwarded.borrow().clone(),
             autocrypt: None,
             sign: self.protection() != Protection::None,
@@ -1182,15 +1442,22 @@ impl Composer {
     /// After another account is chosen in From: its name, its signature
     /// in place of the old one while the signature is on, and its keys.
     /// The protection choice stays when the account can sign.
-    pub fn switch_account(self: &Rc<Self>, account_name: &str, signature: &str, signature_above: bool, mut setup: CryptoSetup) {
+    pub fn switch_account(
+        self: &Rc<Self>,
+        account_name: &str,
+        signature: &str,
+        signature_html: &str,
+        signature_above: bool,
+        mut setup: CryptoSetup,
+    ) {
         self.title.set_subtitle(account_name);
         let was_on = self.signature.is_visible() && self.signature.is_active();
         if was_on {
             self.apply_signature(false);
         }
-        *self.signature_text.borrow_mut() = signature.trim_end().to_string();
+        self.set_signatures(signature, signature_html);
         self.signature_above.set(signature_above);
-        let has = !signature.trim().is_empty();
+        let has = !self.signature_text.borrow().is_empty();
         self.signature.set_visible(has);
         self.signature_internal.set(true);
         self.signature.set_active(was_on && has);
@@ -1219,6 +1486,11 @@ impl Composer {
     fn apply_signature(self: &Rc<Self>, on: bool) {
         let sig = self.signature_text.borrow().clone();
         if sig.is_empty() {
+            return;
+        }
+        if self.format() == Format::Rich {
+            let html = on.then(|| self.rich_signature());
+            self.rich().signature(html.as_deref(), self.signature_above.get());
             return;
         }
         let text = self.text();
@@ -1563,6 +1835,10 @@ impl Composer {
         dialog.open_multiple(parent.as_ref(), None::<&gio::Cancellable>, move |result| {
             let (Some(this), Ok(model)) = (weak.upgrade(), result) else { return };
             let files: Vec<gio::File> = (0..model.n_items()).filter_map(|i| model.item(i).and_downcast()).collect();
+            if this.format() == Format::Rich {
+                glib::spawn_future_local(async move { this.embed_rich(files).await });
+                return;
+            }
             let at = this.buffer.create_mark(None, &this.buffer.iter_at_mark(&this.buffer.get_insert()), false);
             glib::spawn_future_local(async move { this.embed_files(files, at).await });
         });
@@ -1571,7 +1847,7 @@ impl Composer {
     /// Files dropped at (`x`, `y`) on the composer. In a Markdown message,
     /// images can go into the text there; everything else is attached.
     fn files_dropped(self: &Rc<Self>, files: Vec<gio::File>, x: f64, y: f64) {
-        if self.format() != Format::Markdown {
+        if self.format() == Format::Plain {
             self.attach_files(files);
             return;
         }
@@ -1587,15 +1863,17 @@ impl Composer {
         if images.is_empty() {
             return;
         }
+        let rich = self.format() == Format::Rich;
         let iter = inline_image::iter_at_point(&self.widget, &self.view, x, y)
             .unwrap_or_else(|| self.buffer.iter_at_mark(&self.buffer.get_insert()));
         let at = self.buffer.create_mark(None, &iter, false);
         let this = self.clone();
         glib::spawn_future_local(async move {
-            let body = if images.len() == 1 {
-                "An embedded image shows in the text where it was dropped.".to_string()
-            } else {
-                format!("Embedded images show in the text where they were dropped ({} images).", images.len())
+            let body = match (images.len(), rich) {
+                (1, false) => "An embedded image shows in the text where it was dropped.".to_string(),
+                (n, false) => format!("Embedded images show in the text where they were dropped ({n} images)."),
+                (1, true) => "An embedded image shows in the text at the cursor.".to_string(),
+                (n, true) => format!("Embedded images show in the text at the cursor ({n} images)."),
             };
             let dialog = adw::AlertDialog::new(Some("Embed here or attach?"), Some(&body));
             dialog.add_responses(&[("cancel", "_Cancel"), ("attach", "_Attach"), ("embed", "_Embed")]);
@@ -1603,6 +1881,10 @@ impl Composer {
             dialog.set_default_response(Some("embed"));
             dialog.set_close_response("cancel");
             match dialog.choose_future(Some(&this.widget)).await.as_str() {
+                "embed" if rich => {
+                    this.buffer.delete_mark(&at);
+                    this.embed_rich(images).await;
+                }
                 "embed" => this.embed_files(images, at).await,
                 "attach" => {
                     this.buffer.delete_mark(&at);
@@ -1672,6 +1954,49 @@ impl Composer {
         }
         self.buffer.delete_mark(&at);
         self.view.grab_focus();
+    }
+
+    /// Reads `files` and puts them into the rich text at the cursor, shrunk
+    /// as embedded images are; a file GTK cannot show is attached instead.
+    async fn embed_rich(self: &Rc<Self>, files: Vec<gio::File>) {
+        let from = self.froms.borrow().get(self.from.selected() as usize).map(|c| c.address.email.clone()).unwrap_or_default();
+        self.preparing.set(self.preparing.get() + 1);
+        for file in files {
+            let name = file.basename().map(|b| b.to_string_lossy().into_owned()).unwrap_or_else(|| "image".into());
+            let data = match file.load_contents_future().await {
+                Ok((data, _)) => glib::Bytes::from_owned(data),
+                Err(e) => {
+                    self.set_status(Some(&format!("Cannot insert {name}: {}", e.message())));
+                    continue;
+                }
+            };
+            let (ct, _) = gio::content_type_guess(Some(&name), &data[..]);
+            let mime = gio::content_type_get_mime_type(&ct).map(|m| m.to_string()).unwrap_or_else(|| "application/octet-stream".into());
+            let (d, m) = (data.clone(), mime.clone());
+            let prepared = gio::spawn_blocking(move || {
+                let texture = inline_image::decode(&d)?;
+                let pixels = (texture.width(), texture.height());
+                let size = inline_image::start_size(pixels);
+                let (bytes, mime) = inline_image::prepare(&texture, &d, &m, inline_image::sent_pixels(size, pixels), false);
+                Some((bytes, mime, inline_image::css_size(size, pixels).0))
+            })
+            .await
+            .ok()
+            .flatten();
+            let Some((bytes, mime, width)) = prepared else {
+                self.set_status(Some(&format!("{name} cannot be shown in the text, so it was attached")));
+                self.attachments.borrow_mut().push(Attachment { name, mime_type: mime, data });
+                self.refresh_attachments();
+                self.edited();
+                continue;
+            };
+            let image = Inline { cid: compose::new_content_id(&from), name: name.clone(), mime_type: mime, data: bytes };
+            rich_editor::add_image(image.clone());
+            self.rich().image(&image.cid, &name, Some(width));
+            self.rich_images.borrow_mut().push(image);
+        }
+        self.preparing.set(self.preparing.get() - 1);
+        self.rich().grab_focus();
     }
 
     /// Plain text cannot show images: the ones in the text become
@@ -1796,6 +2121,14 @@ impl Composer {
         let any = !tiles.is_empty();
         self.tiles.set_tiles(tiles);
         self.attachments_box.set_visible(any);
+    }
+}
+
+fn format_icon(format: Format) -> &'static str {
+    match format {
+        Format::Rich => "format-text-rich-symbolic",
+        Format::Markdown => "salutations-markdown-symbolic",
+        Format::Plain => "format-text-plaintext-symbolic",
     }
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "salutations-daemon"
-version = "0.4.0"
+version = "0.5.0"
 description = "Salutations' background process: syncing, notifications and rules without GTK"
 license.workspace = true
 edition.workspace = true

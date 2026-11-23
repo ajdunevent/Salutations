@@ -325,6 +325,31 @@ These shaped `salutations-core` and the app and apply to all later work.
   rename.
 - The folder tree's message totals are 0, not unknown, for folders never
   opened in the session, so they are not shown as counts anywhere.
+- Hidden folders are unsubscribed folders, so IMAPX's `use-subscriptions`
+  must be off for them to be listed at all; Salutations sets it off in
+  memory when it opens a store. With it off, the listing still carries
+  `CAMEL_FOLDER_SUBSCRIBED`, which `hidden::mark()` replaces with "shown".
+- The rich text editor turns WebKit's `enable-javascript-markup` off and
+  `enable-javascript` on: the page's own scripts and event attributes never
+  run, while the user script and `evaluate_javascript` still do.
+- A formatting change made from an `input` handler is undone by WebKit:
+  the typing command resets the typing style as it finishes. The editor's
+  Markdown shortcuts run from a zero-delay timeout instead.
+- A web view takes its colours from its style only once it is in a
+  window; the editor sets the page's theme again when it is mapped.
+- `execCommand('fontSize')` sizes are absolute keywords against a 16 px
+  default. The editor applies size 7 and rewrites those elements to
+  `rem` sizes, so sizes follow the reader's text size.
+- IMAPX's `create_folder_sync` does not subscribe, and Dovecot's RENAME
+  and DELETE leave the old names subscribed. The background process
+  subscribes new folders, moves subscriptions across a rename (before it,
+  since IMAPX can only unsubscribe from a folder that exists), and
+  unsubscribes before deleting.
+- After IMAPX subscribes or unsubscribes a folder that is held open, that
+  folder object stops getting changes: the store opens a new one for the
+  same name at the next refresh. The background process starts the
+  folder's watch again afterwards. A subscription changed by another
+  client does not do this.
 - Camel has no public call to drop one cached body. `offline::prune()`
   deletes the file itself: an IMAPX folder's data cache sits next to its
   state file, each body at `cur/<hash>/<safe uid>` with hash bits 5 to 10

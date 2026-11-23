@@ -47,6 +47,10 @@
     <file>icons/scalable/actions/user-trash-symbolic.svg</file>
     <file>icons/scalable/actions/view-refresh-symbolic.svg</file>
     <file>icons/scalable/actions/view-sort-descending-symbolic.svg</file>
+    <file>icons/scalable/actions/salutations-markdown-symbolic.svg</file>
+    <file>icons/scalable/actions/salutations-text-size-symbolic.svg</file>
+    <file>icons/scalable/actions/salutations-table-symbolic.svg</file>
+    <file>icons/scalable/actions/salutations-insert-symbolic.svg</file>
     <file>icons/scalable/apps/net.dunevent.Salutations.svg</file>
     <file>icons/symbolic/apps/net.dunevent.Salutations-symbolic.svg</file>
   </gresource>

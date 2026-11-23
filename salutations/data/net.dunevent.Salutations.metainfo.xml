@@ -70,6 +70,18 @@
   </screenshots>
 
   <releases>
+    <release version="0.5.0" date="2026-11-22">
+      <description>
+        <p>Messages can be written in rich text.</p>
+        <ul>
+          <li>Text style, size, colour, highlight, alignment, lists, links, images, and tables</li>
+          <li>Markdown typed in rich text turns into formatting</li>
+          <li>A rich text signature beside the plain text one</li>
+          <li>Folders can be hidden; hiding unsubscribes, so other apps hide them too</li>
+          <li>Unread counts of other accounts' folders update as mail arrives</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-11-22">
       <description>
         <p>Folders can be managed from Salutations.</p>

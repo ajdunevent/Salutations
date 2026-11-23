@@ -96,9 +96,10 @@ pub fn register_cid_scheme() {
     });
     ctx.register_uri_scheme("cid", |req| {
         let cid = req.path().map(|p| p.to_string()).unwrap_or_default();
-        let found = SHOWN_BODY
+        let found = crate::rich_editor::image(&cid)
+            .or_else(|| SHOWN_BODY
             .with_borrow(|b| b.as_ref().and_then(|b| render::inline_part_in(b, &cid)))
-            .or_else(|| SHOWN.with_borrow(|m| m.as_ref().and_then(|m| render::inline_part(m, &cid))));
+            .or_else(|| SHOWN.with_borrow(|m| m.as_ref().and_then(|m| render::inline_part(m, &cid)))));
         match found {
             Some((bytes, mime)) => {
                 let len = bytes.len() as i64;
@@ -300,6 +301,7 @@ impl Viewer {
             .network_session(&webkit::NetworkSession::new_ephemeral())
             .vexpand(true)
             .build();
+        crate::rich_editor::set_related(&web);
 
         let subject = label(&["viewer-subject"]);
         let avatar = adw::Avatar::new(48, None, true);
@@ -1993,7 +1995,7 @@ fn with_print_header(doc: &str, header: &str) -> String {
 }
 
 /// The GTK interface font as CSS declarations.
-fn interface_font() -> String {
+pub(crate) fn interface_font() -> String {
     let desc = gtk::Settings::default()
         .and_then(|s| s.gtk_font_name())
         .map(|n| gtk::pango::FontDescription::from_string(&n));

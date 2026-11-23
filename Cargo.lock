@@ -750,7 +750,7 @@ dependencies = [
 
 [[package]]
 name = "salutations"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "futures-channel",
  "glib-build-tools",
@@ -765,7 +765,7 @@ dependencies = [
 
 [[package]]
 name = "salutations-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "camel",
  "edataserver",
@@ -780,7 +780,7 @@ dependencies = [
 
 [[package]]
 name = "salutations-daemon"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "cairo-rs",
  "futures-channel",
