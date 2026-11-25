@@ -105,6 +105,10 @@ impl Window {
         }
         if !obj.is_account() {
             let settings = gio::Menu::new();
+            if !path.eq_ignore_ascii_case("INBOX") {
+                let (c, p) = (ctl.clone(), path.clone());
+                add("hide", "Hide", &settings, Box::new(move |this| this.set_folder_hidden(&c, &p, true)));
+            }
             let (uid, p) = (ctl.account.uid.clone(), path.clone());
             add("settings", "Folder settings…", &settings, Box::new(move |this| this.show_preferences_at(Some(&uid), Some(&p))));
             menu.append_section(None, &settings);
@@ -277,7 +281,7 @@ impl Window {
                 heading: false,
             }];
             choices.extend(
-                folder_choices(&ctl, &[])
+                folder_choices(&ctl, &[], true)
                     .into_iter()
                     .filter(|c| !salutations_core::within(&c.full_name, &path))
                     .map(|mut c| {
@@ -330,6 +334,38 @@ impl Window {
         let parent = if target.is_account() { String::new() } else { target.full_name() };
         let this = self.clone();
         glib::spawn_future_local(async move { this.move_folder_to(&ctl, &f.full_name, &parent).await });
+    }
+
+    /// Hides the folder `path` (with its subfolders) or shows it again.
+    /// Hiding it offers Undo.
+    pub(super) fn set_folder_hidden(self: &Rc<Self>, ctl: &Rc<AccountCtl>, path: &str, hidden: bool) {
+        let (this, ctl, path) = (self.clone(), ctl.clone(), path.to_string());
+        glib::spawn_future_local(async move {
+            let name = ctl.obj.find(&path).map(|o| o.title()).unwrap_or_else(|| leaf(&path).to_string());
+            let showing = this.open.borrow().as_ref().is_some_and(|o| Rc::ptr_eq(&o.account, &ctl) && salutations_core::within(&o.obj.full_name(), &path));
+            if hidden && showing {
+                this.show_folder(&ctl, "INBOX").await;
+            }
+            let Ok(store) = this.engine.store_for(&ctl.eng) else { return };
+            let result = store.set_folder_hidden(&path, hidden).await;
+            crate::folder_prefs::folders_changed(&ctl.account.uid);
+            if let Err(e) = result {
+                let what = if hidden { "hide" } else { "show" };
+                this.toast(&format!("Cannot {what} {name}: {}", e.message()), false);
+                return;
+            }
+            if !hidden {
+                return;
+            }
+            let toast = adw::Toast::builder().title(format!("Hid {name}")).button_label("_Undo").build();
+            let (weak, ctl) = (Rc::downgrade(&this), ctl.clone());
+            toast.connect_button_clicked(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.set_folder_hidden(&ctl, &path, false);
+                }
+            });
+            this.toasts.add_toast(toast);
+        });
     }
 
     /// Asks, then moves every message in the folder and its subfolders to
@@ -397,6 +433,7 @@ fn items(store: &gio::ListStore) -> Vec<crate::folder_prefs::FolderItem> {
             full_name: o.full_name(),
             title: o.title(),
             icon: o.icon_name(),
+            hidden: o.hidden(),
             children: items(o.children()),
         })
         .collect()
@@ -426,7 +463,8 @@ impl Window {
                 | FolderOp::Rename { account, .. }
                 | FolderOp::Move { account, .. }
                 | FolderOp::Delete { account, .. }
-                | FolderOp::SetRole { account, .. } => account.clone(),
+                | FolderOp::SetRole { account, .. }
+                | FolderOp::SetHidden { account, .. } => account.clone(),
             };
             let Some(ctl) = this.ctl_of(&account) else { return };
             match op {
@@ -443,6 +481,7 @@ impl Window {
                 FolderOp::Move { path, .. } => this.move_folder(&ctl, &path),
                 FolderOp::Delete { path, .. } => this.delete_folder(&ctl, &path),
                 FolderOp::SetRole { path, role, .. } => this.set_role(&ctl, &path, role),
+                FolderOp::SetHidden { path, hidden, .. } => this.set_folder_hidden(&ctl, &path, hidden),
             }
         });
         crate::folder_prefs::FolderHooks { tree, special, store, specific, act }

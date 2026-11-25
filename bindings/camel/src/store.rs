@@ -77,6 +77,52 @@ pub trait StoreExtManual: IsA<Store> + 'static {
             Ok(())
         }
     }
+
+    /// Whether the store records a subscription to `name`, without asking
+    /// the server. False for a store without subscriptions.
+    #[doc(alias = "camel_subscribable_folder_is_subscribed")]
+    fn is_subscribed(&self, name: &str) -> bool {
+        unsafe {
+            let store: *mut ffi::CamelStore = self.as_ref().to_glib_none().0;
+            glib::gobject_ffi::g_type_check_instance_is_a(store as *mut _, ffi::camel_subscribable_get_type()) != 0
+                && ffi::camel_subscribable_folder_is_subscribed(store as *mut ffi::CamelSubscribable, name.to_glib_none().0) != 0
+        }
+    }
+
+    /// Subscribes to `name` on the server, or unsubscribes. Blocks. A store
+    /// without subscriptions does nothing.
+    #[doc(alias = "camel_subscribable_subscribe_folder_sync")]
+    #[doc(alias = "camel_subscribable_unsubscribe_folder_sync")]
+    fn set_subscribed_sync(
+        &self,
+        name: &str,
+        subscribed: bool,
+        cancellable: Option<&impl IsA<gio::Cancellable>>,
+    ) -> Result<(), glib::Error> {
+        unsafe {
+            let store: *mut ffi::CamelStore = self.as_ref().to_glib_none().0;
+            let is = glib::gobject_ffi::g_type_check_instance_is_a(store as *mut _, ffi::camel_subscribable_get_type());
+            if is == 0 {
+                return Ok(());
+            }
+            let f = if subscribed {
+                ffi::camel_subscribable_subscribe_folder_sync
+            } else {
+                ffi::camel_subscribable_unsubscribe_folder_sync
+            };
+            let mut error = ptr::null_mut();
+            f(
+                store as *mut ffi::CamelSubscribable,
+                name.to_glib_none().0,
+                cancellable.map(|c| c.as_ref()).to_glib_none().0,
+                &mut error,
+            );
+            if !error.is_null() {
+                return Err(from_glib_full(error));
+            }
+            Ok(())
+        }
+    }
 }
 
 impl<O: IsA<Store>> StoreExtManual for O {}

@@ -243,11 +243,11 @@ impl Session {
         } else {
             camel::StoreGetFolderInfoFlags::FAST
         };
-        Ok(store
-            .folder_info_future(None, flags, PRIORITY)
-            .await?
-            .map(|fi| fi.to_nodes())
-            .unwrap_or_default())
+        let mut nodes = store.folder_info_future(None, flags, PRIORITY).await?.map(|fi| fi.to_nodes()).unwrap_or_default();
+        if let Some(uid) = store.uid() {
+            crate::hidden::mark(&uid, &mut nodes, refresh);
+        }
+        Ok(nodes)
     }
 
     /// Which folders the server marks as Sent, Drafts, Archive, Junk, and

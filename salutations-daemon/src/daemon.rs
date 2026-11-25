@@ -85,6 +85,7 @@ pub struct Daemon {
     /// The window writes the settings file; changes apply here too.
     settings_monitor: RefCell<Vec<gio::FileMonitor>>,
     quitting: Cell<bool>,
+    pub(crate) status: crate::status::Status,
 }
 
 impl Daemon {
@@ -105,6 +106,7 @@ impl Daemon {
             hold: RefCell::new(None),
             settings_monitor: RefCell::new(Vec::new()),
             quitting: Cell::new(false),
+            status: Default::default(),
         });
         let weak = Rc::downgrade(&this);
         this.engine.connect(move |event| {
@@ -120,6 +122,7 @@ impl Daemon {
         });
         this.update_hold();
         this.watch_settings();
+        this.read_clock();
         this
     }
 
@@ -127,7 +130,12 @@ impl Daemon {
     /// keeps the process running, and which folders are watched.
     fn watch_settings(self: &Rc<Self>) {
         let mut monitors = Vec::new();
-        for (path, settings) in [(salutations_core::settings::path(), true), (salutations_core::rules::path(), false)] {
+        let files = [
+            (salutations_core::settings::path(), true),
+            (salutations_core::rules::path(), false),
+            (salutations_core::outbox::path(), false),
+        ];
+        for (path, settings) in files {
             let file = gio::File::for_path(path);
             let Ok(monitor) = file.monitor_file(gio::FileMonitorFlags::NONE, None::<&gio::Cancellable>) else { continue };
             let weak = Rc::downgrade(self);
@@ -143,6 +151,7 @@ impl Daemon {
                 for a in this.engine.accounts() {
                     this.update_watches(&a);
                 }
+                this.update_status();
             });
             monitors.push(monitor);
         }
@@ -174,6 +183,7 @@ impl Daemon {
                 if let Some(a) = self.engine.account(uid) {
                     self.emit("account", self.account_info(&a).to_variant());
                 }
+                self.update_status();
             }
             engine::Event::Folders { account, nodes, rebuild } => {
                 if let Some(a) = self.engine.account(account) {
@@ -195,6 +205,8 @@ impl Daemon {
                     self.refresh_watched(&a);
                 }
                 self.update_badge();
+                self.synced_now();
+                self.read_clock();
                 self.emit("synced", uid.to_variant());
             }
         }
@@ -373,6 +385,32 @@ impl Daemon {
         }
     }
 
+    /// Subscribes to `path` or unsubscribes, on a worker thread.
+    async fn set_subscribed(store: &camel::Store, path: &str, on: bool) -> Result<(), glib::Error> {
+        let job = Handoff(store.clone());
+        let name = path.to_string();
+        gio::spawn_blocking(move || {
+            let Handoff(s) = job;
+            s.set_subscribed_sync(&name, on, None::<&gio::Cancellable>)
+        })
+        .await
+        .map_err(|_| glib::Error::new(gio::IOErrorEnum::Failed, "Cannot change the subscription"))?
+    }
+
+    /// The subscribed folders among `path` and its subfolders.
+    async fn subscribed_within(&self, store: &camel::Store, path: &str) -> Vec<String> {
+        let nodes = self.engine.session.folders_future(store, false).await.unwrap_or_default();
+        fn walk(nodes: &[camel::FolderNode], out: &mut Vec<String>) {
+            for n in nodes {
+                out.push(n.full_name.clone());
+                walk(&n.children, out);
+            }
+        }
+        let mut all = Vec::new();
+        walk(&nodes, &mut all);
+        all.into_iter().filter(|f| salutations_core::within(f, path) && store.is_subscribed(f)).collect()
+    }
+
     /// Deletes `path` and its subfolders: first every message goes to
     /// Trash, then the folders, deepest first. A folder in Trash, or on an
     /// account without Trash, is deleted with its messages. Nothing is
@@ -423,6 +461,10 @@ impl Daemon {
         self.let_go(acct, path, true);
         doomed.sort_by_key(|(f, _)| std::cmp::Reverse(f.matches('/').count()));
         for (f, _) in doomed {
+            // Dovecot keeps the subscriptions of deleted folders.
+            if store.is_subscribed(&f) {
+                let _ = Self::set_subscribed(&store, &f, false).await;
+            }
             let job = Handoff(store.clone());
             let name = f.clone();
             gio::spawn_blocking(move || {
@@ -672,7 +714,8 @@ impl Daemon {
                 let (uid, parent, folder) = args!((String, String, String));
                 let a = self.account(&uid)?;
                 let store = self.engine.store_for(&a)?;
-                let job = Handoff(store);
+                let job = Handoff(store.clone());
+                let path = if parent.is_empty() { folder.clone() } else { format!("{parent}/{folder}") };
                 gio::spawn_blocking(move || {
                     let Handoff(s) = job;
                     let parent = (!parent.is_empty()).then_some(parent);
@@ -680,6 +723,10 @@ impl Daemon {
                 })
                 .await
                 .map_err(|_| glib::Error::new(gio::IOErrorEnum::Failed, "Cannot create the folder"))??;
+                // IMAPX creates folders unsubscribed, which would hide them.
+                if let Err(e) = Self::set_subscribed(&store, &path, true).await {
+                    log(&format!("{uid}: cannot subscribe to {path}: {}", e.message()));
+                }
                 Ok(unit)
             }
             "rename_folder" => {
@@ -687,10 +734,16 @@ impl Daemon {
                 let a = self.account(&uid)?;
                 let store = self.engine.store_for(&a)?;
                 self.let_go(&a, &old, false);
+                // Dovecot leaves subscriptions under the old names, and
+                // IMAPX can only unsubscribe from a folder that exists.
+                let subscribed = self.subscribed_within(&store, &old).await;
+                for f in &subscribed {
+                    let _ = Self::set_subscribed(&store, f, false).await;
+                }
                 // IMAPX's rename drops its own reference to the folder and
                 // then uses it, so one is held here until it is done.
                 let held = self.engine.session.folder_future(&store, &old).await?;
-                let job = Handoff((store, held));
+                let job = Handoff((store.clone(), held));
                 let (o, n) = (old.clone(), new.clone());
                 let renamed = gio::spawn_blocking(move || {
                     let Handoff((s, _held)) = job;
@@ -698,6 +751,17 @@ impl Daemon {
                 })
                 .await
                 .map_err(|_| glib::Error::new(gio::IOErrorEnum::Failed, "Cannot rename the folder"))?;
+                if renamed.is_ok() {
+                    salutations_core::hidden::renamed(&uid, &old, &new);
+                }
+                // IMAPX subscribes only to folders it has listed.
+                let _ = self.engine.session.folders_future(&store, true).await;
+                for f in &subscribed {
+                    let name = if renamed.is_ok() { salutations_core::renamed_path(f, &old, &new).unwrap_or_else(|| f.clone()) } else { f.clone() };
+                    if let Err(e) = Self::set_subscribed(&store, &name, true).await {
+                        log(&format!("{uid}: cannot subscribe to {name}: {}", e.message()));
+                    }
+                }
                 if renamed.is_ok() {
                     crate::inbox::rename_state(&uid, &old, &new);
                     if let Some(mut special) = a.special() {
@@ -711,6 +775,22 @@ impl Daemon {
                 self.engine.refresh_folders(&a).await;
                 self.update_watches(&a);
                 renamed?;
+                Ok(unit)
+            }
+            "set_folder_hidden" => {
+                let (uid, path, hidden) = args!((String, String, bool));
+                let a = self.account(&uid)?;
+                let store = self.engine.store_for(&a)?;
+                let done = Self::set_subscribed(&store, &path, !hidden).await;
+                if done.is_ok() && hidden {
+                    salutations_core::hidden::hid(&uid, &path);
+                }
+                self.engine.refresh_folders(&a).await;
+                // After IMAPX changes a subscription, the folder held open
+                // stops getting changes, so the watches start again.
+                self.let_go(&a, &path, false);
+                self.update_watches(&a);
+                done?;
                 Ok(unit)
             }
             "delete_folder" => {

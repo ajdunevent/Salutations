@@ -12,6 +12,7 @@ pub mod crypto;
 pub mod debug;
 pub mod downsync;
 pub mod engine;
+pub mod hidden;
 pub mod ipc;
 pub mod links;
 pub mod mailto;

@@ -319,6 +319,7 @@ impl Engine {
             return Ok(s.clone());
         }
         offline::keep_check_all_off(&self.registry, &acct.account);
+        offline::list_all_folders(&self.registry, &acct.account);
         let s = self.session.store(&acct.account)?;
         *acct.store.borrow_mut() = Some(s.clone());
         self.apply_holds(acct);

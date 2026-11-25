@@ -1,5 +1,6 @@
 //! Preferences → an account → Folders: each folder's page with its name,
-//! offline use, notifications, and role, walked one level per page.
+//! offline use, notifications, visibility, and role, walked one level per
+//! page.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -16,6 +17,8 @@ pub struct FolderItem {
     pub full_name: String,
     pub title: String,
     pub icon: String,
+    /// Hidden by itself; its subfolders are hidden with it.
+    pub hidden: bool,
     pub children: Vec<FolderItem>,
 }
 
@@ -26,6 +29,7 @@ pub enum FolderOp {
     Move { account: String, path: String },
     Delete { account: String, path: String },
     SetRole { account: String, path: String, role: Option<Role> },
+    SetHidden { account: String, path: String, hidden: bool },
 }
 
 type Tree = Rc<dyn Fn(&str) -> Vec<FolderItem>>;
@@ -69,22 +73,43 @@ fn find<'a>(items: &'a [FolderItem], path: &str) -> Option<&'a FolderItem> {
     items.iter().find_map(|i| if i.full_name == path { Some(i) } else { find(&i.children, path) })
 }
 
-fn folder_row(item: &FolderItem) -> adw::ActionRow {
+/// The hidden folder that hides `path`, other than itself.
+fn hidden_above<'a>(items: &'a [FolderItem], path: &str) -> Option<&'a FolderItem> {
+    let parts: Vec<&str> = path.split('/').collect();
+    (1..parts.len()).filter_map(|i| find(items, &parts[..i].join("/"))).find(|i| i.hidden)
+}
+
+fn folder_row(item: &FolderItem, hidden: bool) -> adw::ActionRow {
     let row = adw::ActionRow::builder().title(glib::markup_escape_text(&item.title)).activatable(true).build();
     row.add_prefix(&gtk::Image::from_icon_name(&item.icon));
     if !item.children.is_empty() {
         let n = item.children.len();
         row.set_subtitle(&if n == 1 { "1 subfolder".to_string() } else { format!("{n} subfolders") });
     }
+    if hidden {
+        let icon = gtk::Image::from_icon_name("view-conceal-symbolic");
+        icon.set_tooltip_text(Some("Hidden from the sidebar"));
+        row.add_suffix(&icon);
+        row.add_css_class("dim-label");
+    }
     row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
     row
 }
 
 /// The rows of `items`, each opening its folder's page, then New folder.
-fn folder_list(dialog: &adw::PreferencesDialog, account: &str, hooks: &FolderHooks, items: &[FolderItem], parent: Option<&str>, title: &str) -> adw::PreferencesGroup {
+/// `hidden` says the parent is hidden, hiding these too.
+fn folder_list(
+    dialog: &adw::PreferencesDialog,
+    account: &str,
+    hooks: &FolderHooks,
+    items: &[FolderItem],
+    parent: Option<&str>,
+    title: &str,
+    hidden: bool,
+) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::builder().title(title).build();
     for item in items {
-        let row = folder_row(item);
+        let row = folder_row(item, hidden || item.hidden);
         let (dialog, account, hooks, path) = (dialog.downgrade(), account.to_string(), hooks.clone(), item.full_name.clone());
         row.connect_activated(move |_| {
             if let Some(dialog) = dialog.upgrade() {
@@ -115,7 +140,7 @@ pub fn root_page(dialog: &adw::PreferencesDialog, account: &str, hooks: &FolderH
             let (Some(dialog), Some(view)) = (dialog.upgrade(), view.upgrade()) else { return };
             let content = adw::PreferencesPage::new();
             let tree = (hooks.tree)(&account);
-            content.add(&folder_list(&dialog, &account, &hooks, &tree, None, ""));
+            content.add(&folder_list(&dialog, &account, &hooks, &tree, None, "", false));
             view.set_content(Some(&content));
         })
     };
@@ -146,7 +171,8 @@ pub fn folder_page(dialog: &adw::PreferencesDialog, account: &str, path: &str, h
                 return;
             };
             page.set_title(&item.title);
-            view.set_content(Some(&folder_content(&dialog, &account, &item, &hooks)));
+            let above = hidden_above(&tree, &path).map(|i| i.title.clone());
+            view.set_content(Some(&folder_content(&dialog, &account, &item, above.as_deref(), &hooks)));
         })
     };
     fill();
@@ -154,7 +180,8 @@ pub fn folder_page(dialog: &adw::PreferencesDialog, account: &str, path: &str, h
     page
 }
 
-fn folder_content(dialog: &adw::PreferencesDialog, account: &str, item: &FolderItem, hooks: &FolderHooks) -> adw::PreferencesPage {
+/// `hidden_by` names the hidden parent hiding the folder, if any.
+fn folder_content(dialog: &adw::PreferencesDialog, account: &str, item: &FolderItem, hidden_by: Option<&str>, hooks: &FolderHooks) -> adw::PreferencesPage {
     let path = item.full_name.clone();
     let inbox = path.eq_ignore_ascii_case("INBOX");
     let special = (hooks.special)(account);
@@ -177,8 +204,8 @@ fn folder_content(dialog: &adw::PreferencesDialog, account: &str, item: &FolderI
         let name = adw::ActionRow::builder()
             .title("Name")
             .subtitle(glib::markup_escape_text(&item.title))
-            .css_classes(["property"])
             .build();
+        name.add_css_class("property");
         name.set_tooltip_text(Some(if inbox { "Inbox can't be renamed" } else { "Special folders can't be renamed" }));
         group.add(&name);
     }
@@ -201,10 +228,14 @@ fn folder_content(dialog: &adw::PreferencesDialog, account: &str, item: &FolderI
             });
         }
     }
+    let hidden = item.hidden || hidden_by.is_some();
     let notify = adw::SwitchRow::builder()
         .title("Notify about new mail")
         .active(Settings::get().notify_folders_for(account).iter().any(|f| f.eq_ignore_ascii_case(&path)))
         .build();
+    if hidden && notify.is_active() {
+        notify.set_subtitle("Not while hidden");
+    }
     let (a, p) = (account.to_string(), path.clone());
     notify.connect_active_notify(move |row| {
         let mut st = Settings::get();
@@ -219,6 +250,19 @@ fn folder_content(dialog: &adw::PreferencesDialog, account: &str, item: &FolderI
         }
     });
     group.add(&notify);
+    if !inbox {
+        let hide = adw::SwitchRow::builder().title("Hide from sidebar").active(hidden).build();
+        match hidden_by {
+            Some(parent) => {
+                hide.set_subtitle(&format!("Hidden with {}", glib::markup_escape_text(parent)));
+                hide.set_sensitive(false);
+            }
+            None => hide.set_subtitle("Unsubscribes, so other apps that follow subscriptions hide it too"),
+        }
+        let (act, a, p) = (hooks.act.clone(), account.to_string(), path.clone());
+        hide.connect_active_notify(move |row| act(FolderOp::SetHidden { account: a.clone(), path: p.clone(), hidden: row.is_active() }));
+        group.add(&hide);
+    }
     if !inbox {
         let labels: Vec<&str> = ROLES.iter().map(|r| r.map_or("None", Role::label)).collect();
         let use_as = adw::ComboRow::builder()
@@ -236,7 +280,7 @@ fn folder_content(dialog: &adw::PreferencesDialog, account: &str, item: &FolderI
         group.add(&use_as);
     }
     content.add(&group);
-    content.add(&folder_list(dialog, account, hooks, &item.children, Some(&path), "Subfolders"));
+    content.add(&folder_list(dialog, account, hooks, &item.children, Some(&path), "Subfolders", hidden));
     if changeable {
         let manage = adw::PreferencesGroup::new();
         let move_row = adw::ButtonRow::builder().title("_Move…").use_underline(true).build();
@@ -258,7 +302,7 @@ pub fn folders_group(dialog: &adw::PreferencesDialog, account: &str, hooks: &Fol
     let group = adw::PreferencesGroup::new();
     let row = adw::ActionRow::builder()
         .title("Folders")
-        .subtitle("Names, offline use, notifications, and special folders")
+        .subtitle("Names, offline use, notifications, hiding, and special folders")
         .activatable(true)
         .build();
     row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));

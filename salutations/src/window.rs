@@ -1599,16 +1599,16 @@ impl Window {
     /// stay expanded; rebuilds it otherwise or when `rebuild` is set.
     fn set_folders(self: &Rc<Self>, ctl: &Rc<AccountCtl>, nodes: &[camel::FolderNode], rebuild: bool) {
         let special = ctl.eng.special().unwrap_or_default();
-        fn names(nodes: &[camel::FolderNode], out: &mut Vec<String>) {
+        fn names(nodes: &[camel::FolderNode], out: &mut Vec<(String, bool)>) {
             for n in nodes {
-                out.push(n.full_name.clone());
+                out.push((n.full_name.clone(), !salutations_core::hidden::shown(n)));
                 names(&n.children, out);
             }
         }
-        fn existing(store: &gio::ListStore, out: &mut Vec<String>) {
+        fn existing(store: &gio::ListStore, out: &mut Vec<(String, bool)>) {
             for i in 0..store.n_items() {
                 if let Some(o) = store.item(i).and_downcast::<FolderObject>() {
-                    out.push(o.full_name());
+                    out.push((o.full_name(), o.hidden()));
                     existing(o.children(), out);
                 }
             }
@@ -1647,9 +1647,10 @@ impl Window {
         }
         // A rebuilt tree drops the selection; restore it, or open INBOX
         // of the first account on first load.
+        // A folder hidden from elsewhere while open gives way to Inbox.
         let reselect = open
             .as_deref()
-            .and_then(|name| ctl.obj.find(name))
+            .and_then(|name| if hidden_by(ctl, name).is_some() { ctl.obj.find("INBOX") } else { ctl.obj.find(name) })
             .or_else(|| {
                 let first = self.accounts.borrow().first().is_some_and(|c| Rc::ptr_eq(c, ctl));
                 (first && self.open.borrow().is_none())
@@ -1938,6 +1939,14 @@ impl Window {
                 self.update_outbox_notes();
             }
             Request::Toast(text) => self.toast(&text, false),
+            // The open folder keeps its own count, which leaves out
+            // messages whose move is waiting.
+            Request::Unread(account, folder, n) => {
+                let open = self.open.borrow().as_ref().is_some_and(|o| o.account.account.uid == account && o.obj.full_name() == folder);
+                if !open && let Some(obj) = self.ctl_of(&account).and_then(|c| c.obj.find(&folder)) {
+                    obj.set_unread(n);
+                }
+            }
         }
     }
 
@@ -2241,7 +2250,7 @@ impl Window {
             .map(|ctl| {
                 let folders = match scope {
                     search::Scope::Folder => vec![(open_folder.clone(), None)],
-                    _ => folder_choices(&ctl, &[])
+                    _ => folder_choices(&ctl, &[], false)
                         .into_iter()
                         .map(|c| {
                             let loc = if several { format!("{} · {}", ctl.account.display_name(), c.path) } else { c.path };
@@ -2338,7 +2347,7 @@ impl Window {
         let Some(account) = accounts.iter().find(|a| a.obj.account_uid() == m.account_uid).cloned() else { return };
         let Some(dest_account) = accounts.iter().find(|a| a.obj.account_uid() == obj.account_uid()).cloned() else { return };
         let full_name = obj.full_name();
-        let Some(mut dest) = folder_choices(&dest_account, &[]).into_iter().find(|c| c.full_name == full_name) else { return };
+        let Some(mut dest) = folder_choices(&dest_account, &[], false).into_iter().find(|c| c.full_name == full_name) else { return };
         if dest_account.account.uid != account.account.uid {
             dest.path = format!("{} / {}", dest_account.account.display_name(), dest.path);
         }
@@ -2474,7 +2483,7 @@ impl Window {
                     }
                 }
                 for (dest, uids) in groups {
-                    let path = folder_choices(&t.account, &[])
+                    let path = folder_choices(&t.account, &[], false)
                         .into_iter()
                         .find(|c| c.full_name == dest)
                         .map_or_else(|| "Inbox".to_string(), |c| c.path);
@@ -2531,7 +2540,7 @@ impl Window {
                     .chain([special.trash, special.junk, special.drafts].into_iter().flatten())
                     .collect();
                 let skip: Vec<&str> = skip.iter().map(|s| s.as_str()).collect();
-                let choices: Vec<FolderChoice> = folder_choices(ctl, &[])
+                let choices: Vec<FolderChoice> = folder_choices(ctl, &[], true)
                     .into_iter()
                     .filter(|c| !skip.iter().any(|s| s.eq_ignore_ascii_case(&c.full_name)))
                     .collect();
@@ -3125,7 +3134,7 @@ fn all_folder_choices(accounts: &[Rc<AccountCtl>], exclude: Option<(&AccountCtl,
             Some((a, name)) if std::ptr::eq(a, ctl.as_ref()) => vec![name],
             _ => Vec::new(),
         };
-        let mut choices = folder_choices(ctl, &skip);
+        let mut choices = folder_choices(ctl, &skip, true);
         if accounts.len() > 1 {
             out.push(FolderChoice {
                 account: ctl.account.uid.clone(),
@@ -3188,11 +3197,21 @@ fn set_flags(t: &Target, mask: u32, set: u32) {
     t.folder.thaw();
 }
 
-/// The account's folders for the picker, tree order, without `exclude`.
-fn folder_choices(ctl: &AccountCtl, exclude: &[&str]) -> Vec<FolderChoice> {
-    fn walk(store: &gio::ListStore, prefix: &str, depth: usize, exclude: &[&str], out: &mut Vec<FolderChoice>) {
+/// The hidden folder that hides `path`: itself or a parent.
+fn hidden_by(ctl: &AccountCtl, path: &str) -> Option<FolderObject> {
+    let parts: Vec<&str> = path.split('/').collect();
+    (1..=parts.len()).filter_map(|i| ctl.obj.find(&parts[..i].join("/"))).find(|o| o.hidden())
+}
+
+/// The account's folders for the picker, tree order, without `exclude`;
+/// with `shown_only`, without hidden folders either.
+fn folder_choices(ctl: &AccountCtl, exclude: &[&str], shown_only: bool) -> Vec<FolderChoice> {
+    fn walk(store: &gio::ListStore, prefix: &str, depth: usize, exclude: &[&str], shown_only: bool, out: &mut Vec<FolderChoice>) {
         for i in 0..store.n_items() {
             let Some(o) = store.item(i).and_downcast::<FolderObject>() else { continue };
+            if shown_only && o.hidden() {
+                continue;
+            }
             let path = if prefix.is_empty() { o.title() } else { format!("{prefix} / {}", o.title()) };
             if !exclude.contains(&o.full_name().as_str()) {
                 out.push(FolderChoice {
@@ -3205,11 +3224,11 @@ fn folder_choices(ctl: &AccountCtl, exclude: &[&str]) -> Vec<FolderChoice> {
                     heading: false,
                 });
             }
-            walk(o.children(), &path, depth + 1, exclude, out);
+            walk(o.children(), &path, depth + 1, exclude, shown_only, out);
         }
     }
     let mut out = Vec::new();
-    walk(ctl.obj.children(), "", 0, exclude, &mut out);
+    walk(ctl.obj.children(), "", 0, exclude, shown_only, &mut out);
     out
 }
 

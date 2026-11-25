@@ -40,6 +40,9 @@ mod imp {
         /// Messages waiting to be sent after a failed attempt.
         #[property(get, set)]
         pub unsent: Cell<u32>,
+        /// Hidden by itself; its subfolders are hidden with it.
+        #[property(get, set)]
+        pub hidden: Cell<bool>,
         pub children: OnceCell<gio::ListStore>,
     }
 
@@ -74,6 +77,7 @@ impl FolderObject {
             .property("unread", node.unread)
             .property("account-uid", account_uid)
             .property("full-name", node.full_name.as_str())
+            .property("hidden", !salutations_core::hidden::shown(node))
             .build();
         for child in &node.children {
             obj.children().append(&FolderObject::folder(account_uid, child));

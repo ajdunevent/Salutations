@@ -15,7 +15,7 @@ pub struct Waiting {
     pub error: String,
 }
 
-fn path() -> PathBuf {
+pub fn path() -> PathBuf {
     crate::data_dir().join("outbox.ini")
 }
 

@@ -70,9 +70,12 @@ impl FolderPane {
         let tree = gtk::TreeListModel::new(accounts.clone(), false, true, |item| {
             // An account's folders arrive after its row exists, so accounts
             // always get their (possibly empty) child model. Folder rows are
-            // rebuilt whenever the tree changes.
+            // rebuilt whenever the tree changes. Hidden folders are left
+            // out with their subfolders.
             let obj = item.downcast_ref::<FolderObject>()?;
-            (obj.is_account() || obj.children().n_items() > 0).then(|| obj.children().clone().upcast())
+            let filter = gtk::CustomFilter::new(|o| !o.downcast_ref::<FolderObject>().is_some_and(|f| f.hidden()));
+            let shown = gtk::FilterListModel::new(Some(obj.children().clone()), Some(filter));
+            (obj.is_account() || shown.n_items() > 0).then(|| shown.upcast())
         });
         let selection = gtk::SingleSelection::builder()
             .model(&tree)

@@ -90,8 +90,10 @@ pub enum Request {
     /// A `mailto:` link, or empty for a new message.
     Compose(String),
     Import(Vec<String>),
-    /// A notification's button: kind, account, message.
+    /// A notification's button: kind, account, folder, message.
     Notification(String, String, String, String),
+    /// A watched folder's unread count: account, folder, count.
+    Unread(String, String, i32),
     /// The waiting draft being sent for an account, or none.
     Outbox(String, Option<String>),
     Toast(String),
@@ -352,6 +354,11 @@ impl Engine {
                 }
             }
             "toast" => self.request(Request::Toast(data.get::<String>().unwrap_or_default())),
+            "unread" => {
+                if let Some((a, f, n)) = data.get::<(String, String, i32)>() {
+                    self.request(Request::Unread(a, f, n));
+                }
+            }
             _ => {}
         }
     }
@@ -858,6 +865,11 @@ impl Store {
     /// Renames or moves the folder `old` to the full name `new`.
     pub async fn rename_folder(&self, old: &str, new: &str) -> Result<(), glib::Error> {
         call("rename_folder", args((self.account.clone(), old.to_string(), new.to_string()))).await.map(|_| ())
+    }
+
+    /// Hides `path` by unsubscribing from it, or shows it again.
+    pub async fn set_folder_hidden(&self, path: &str, hidden: bool) -> Result<(), glib::Error> {
+        call("set_folder_hidden", args((self.account.clone(), path.to_string(), hidden))).await.map(|_| ())
     }
 
     /// Deletes `path` and its subfolders, their messages moved to Trash

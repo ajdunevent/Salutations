@@ -406,6 +406,16 @@ pub fn keep_check_all_off(registry: &SourceRegistry, account: &crate::Account) {
     }
 }
 
+/// Lists every folder whatever the account's "only subscribed folders"
+/// setting says, without saving that: Salutations hides folders by
+/// unsubscribing from them (see `hidden`).
+pub fn list_all_folders(registry: &SourceRegistry, account: &crate::Account) {
+    let Ok(source) = source(registry, &account.uid) else { return };
+    if let Some(s) = settings(&source, &account.backend_name).filter(|s| s.find_property("use-subscriptions").is_some()) {
+        s.set_property("use-subscriptions", false);
+    }
+}
+
 fn idle_settings(source: &Source, backend: &str) -> Option<camel::OfflineSettings> {
     settings(source, backend).filter(|s| s.find_property("use-idle").is_some())
 }

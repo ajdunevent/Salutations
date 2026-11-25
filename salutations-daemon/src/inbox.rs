@@ -47,6 +47,8 @@ pub(crate) struct Watch {
     pub folder: camel::Folder,
     /// The highest UID considered.
     last_uid: Cell<u64>,
+    /// The unread count last sent to the window.
+    unread: Cell<Option<u32>>,
     /// Messages with a notification of their own.
     pub noted: RefCell<Vec<String>>,
     handler: RefCell<Option<glib::SignalHandlerId>>,
@@ -218,6 +220,7 @@ impl Daemon {
             path: path.to_string(),
             folder: folder.clone(),
             last_uid: Cell::new(start),
+            unread: Cell::new(None),
             noted: RefCell::default(),
             handler: RefCell::default(),
         });
@@ -230,6 +233,7 @@ impl Daemon {
         *watch.handler.borrow_mut() = Some(handler);
         self.extra(acct.uid()).watches.borrow_mut().insert(path.to_string(), watch.clone());
         log(&format!("{}: watching {path} from UID {start}", acct.uid()));
+        self.send_unread(acct, &watch);
         self.notify_new(acct, &watch, &uids);
         self.update_badge();
     }
@@ -281,8 +285,19 @@ impl Daemon {
                 self.show_combined(acct, false);
             }
         }
+        self.send_unread(acct, watch);
         self.notify_new(acct, watch, &changes.added);
         self.update_badge();
+        self.update_status();
+    }
+
+    /// Keeps the window's folder tree current for a watched folder, which
+    /// otherwise learns counts only when the folders are listed.
+    fn send_unread(&self, acct: &AccountState, watch: &Watch) {
+        let Some(n) = watch.folder.folder_summary().map(|s| s.unread_count()) else { return };
+        if watch.unread.replace(Some(n)) != Some(n) {
+            self.emit("unread", (acct.uid().to_string(), watch.path.clone(), n as i32).to_variant());
+        }
     }
 
     /// Runs the rules for the folder on messages among `uids` newer than
@@ -351,10 +366,12 @@ impl Daemon {
     }
 
     /// Notifies about the messages among `fresh`, new mail the rules left
-    /// in the folder, that are unread, when the folder notifies.
+    /// in the folder, that are unread, when the folder notifies and is not
+    /// hidden.
     fn notify_fresh(self: &Rc<Self>, acct: &Rc<AccountState>, watch: &Rc<Watch>, fresh: Vec<String>) {
         let folder = &watch.folder;
-        let notifies = Settings::get().notify_folders_for(acct.uid()).iter().any(|f| f.eq_ignore_ascii_case(&watch.path));
+        let notifies = Settings::get().notify_folders_for(acct.uid()).iter().any(|f| f.eq_ignore_ascii_case(&watch.path))
+            && !salutations_core::hidden::is_hidden(acct.uid(), &watch.path);
         let fresh: Vec<String> = fresh.into_iter().filter(|u| folder.message_flags(u) & (SEEN | DELETED | JUNK) == 0).collect();
         log(&format!("{}: {} to notify about in {}", acct.uid(), if notifies { fresh.len() } else { 0 }, watch.path));
         if fresh.is_empty() || !notifies {

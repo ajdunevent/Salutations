@@ -9,6 +9,7 @@ mod inbox;
 mod notify;
 mod outbox;
 mod people;
+mod status;
 
 use std::cell::RefCell;
 use std::rc::Rc;
